@@ -1,35 +1,59 @@
+<p align="center">
+  <img src="assets/cover.png" alt="Session Check for Orca: which worktrees still have uncommitted work? Know before you close a session." />
+</p>
+
 # Session Check for Orca
 
-See at a glance which of your Orca worktrees still have **uncommitted files**. A sidebar panel lists every local worktree with its uncommitted, staged and untracked files, unpushed commits, stash entries and running agent, and gives each one a traffic light: can you close this session, or not?
+**Know which Orca sessions still have open work before you close them.** A sidebar panel lists every local worktree with its uncommitted files, unpushed commits, stash entries and running agent, and gives each one a clear verdict: keep it open, check it first, or close it.
 
-Made by [BroDesigns](https://brodesigns.de).
+Made by [BroDesigns](https://brodesigns.de). Read-only: it never closes, deletes, commits, stashes, pushes or fetches anything, and never reads file contents.
 
-## Features
+![The Session Check panel: current session on top, then worktrees grouped by status with colored chips](assets/screenshot-overview.png)
 
-- **Uncommitted files first:** a banner says how many worktrees have uncommitted files, and the list is grouped: *Uncommitted files* (most files on top), *Keep open*, *Check first*, *Can close* and *Not checked*. The last two fold away. Filter buttons show only the uncommitted or only the closable ones.
-- **One compact card per worktree:** project and worktree name, colored chips (`14 changed`, `13 unpushed`, `agent working`, `3 untracked`, `1 stash`, `no upstream`, `clean`) and a red border when files are uncommitted.
-- **Traffic light per worktree**
+## What you get
 
-| Light | Meaning |
+- **Current session on top.** The workspace you are in is pinned above the list, whatever filter, search or grouping is set.
+- **Uncommitted files first.** A short line tells you how many worktrees have uncommitted files. The list is grouped into *Uncommitted files* (most files on top), *Keep open*, *Check first*, *Can close* and *Not checked*. The last two fold away.
+- **One compact card per worktree.** Project and worktree name, branch, and chips such as `14 changed`, `13 unpushed`, `agent working`, `3 untracked`, `1 stash`, `no upstream`, `merged` or `clean`. Red is only used for conflicts and a running merge or rebase, so the panel stays calm.
+- **Size and age at a glance.** `+120 -30` lines, the first changed file names, the oldest uncommitted change, the last commit and the last activity Orca saw. Forgotten sessions stand out. Only time stamps are read, never file contents.
+- **Details on demand.** Open *Files* to see the first 20 changed files in plain words (`new`, `edited`, `deleted`, `renamed`, `conflict`), plus the subjects of the first three unpushed commits.
+- **Search, filter, group.** Search by project, worktree or branch. Filter to uncommitted or closable worktrees. Group by status or by project. Filter and grouping are remembered.
+- **Open** jumps to the worktree in Orca. **Hide** only removes a worktree from the list (nothing is closed or deleted, *Show hidden* brings it back).
+- **Hiding is safe.** A worktree with open work cannot be hidden, and a hidden one comes back as soon as it gets worse than it was when you hid it.
+- **Stays current.** The open panel rescans every 30 seconds (10 to 300, setting) and when agents or workspaces change.
+
+| Group by status | Group by project | Light theme |
+|---|---|---|
+| ![Grouped by status](assets/screenshot-overview.png) | ![Grouped by project](assets/screenshot-projects.png) | ![Light theme](assets/screenshot-light.png) |
+
+## The verdicts
+
+| Verdict | Meaning |
 |---|---|
-| Keep open (red) | uncommitted or conflicted files, unpushed commits, an agent working or waiting for you, or a merge, rebase, cherry-pick, revert or bisect in progress |
-| Check first (yellow) | only untracked files, stash entries, a branch without upstream that has commits outside the base branch, or a detached HEAD |
-| Can close (green) | clean, nothing unpushed, or every commit is already in the base branch, and no agent is active |
-| Not checked (grey) | folder workspace, remote workspace, not a git repository, git missing or failing: the reason is shown, nothing is guessed |
+| **Keep open** | uncommitted or conflicted files, unpushed commits, an agent working or waiting for you, or a merge, rebase, cherry-pick, revert or bisect in progress |
+| **Check first** | only untracked files, stash entries, a branch without upstream that has commits outside the base branch, a deleted upstream, a detached HEAD, or submodules (their changes are not looked at) |
+| **Can close** | clean, nothing unpushed (or every commit is already in the base branch), and no active agent |
+| **Not checked** | folder workspace, remote (SSH) workspace, partial clone, not a git repository, git missing or failing. The reason is shown, nothing is guessed |
 
-  When in doubt it is stricter: a worktree is never green because something could not be read. A repository with submodules is at most yellow (their changes are not looked at), and so is a branch whose upstream was deleted. Filters such as Git LFS are not run, so LFS files can show up as modified when only their time stamp changed.
-- **Changed files:** open *Files* on a card to see the first 20 changed files with their git status.
-- **Current session** is pinned on top of the list, whatever filter, search or grouping is set.
-- **Open** jumps to the worktree in Orca. **Hide** only removes a worktree from this list (nothing is closed or deleted, *Show hidden* brings it back). A worktree with open work cannot be hidden, and a hidden one is shown again as soon as it gets worse than it was when you hid it.
-- **Age and size:** each card shows the oldest uncommitted change, the last commit and the last activity Orca saw, so forgotten sessions stand out, plus `+120 -30` lines and the first changed file names. Only time stamps are read, never file contents.
-- **Unpushed commits** are named (first three subjects) under *Details*. A branch whose commits are already in the base branch shows a green `merged` chip.
-- **Search** by project, worktree or branch. Filter and grouping are remembered.
-- **Group by** status (default) or by project.
-- The open panel rescans every 30 seconds (10 to 300, setting) and when agents or workspaces change.
-- Branch stash entries are counted per branch (git shares one stash between all worktrees).
-- Unpushed and behind counts use the **last known** upstream. Nothing is fetched, so run `git fetch` yourself if you want fresh numbers. "Already in the base branch" compares with `origin/HEAD` (or `origin/main`, `origin/master`, or the base branch you set).
+When in doubt it is stricter: a worktree is never shown as closable because something could not be read.
 
-It only shows. It never closes, deletes, commits, stashes, pushes or fetches anything and does not read file contents.
+Good to know:
+
+- Unpushed and behind counts use the **last known** upstream. Nothing is fetched, so run `git fetch` yourself for fresh numbers.
+- "Already in the base branch" compares with `origin/HEAD` (or `origin/main`, `origin/master`, or the base branch you set).
+- Git shares one stash between all worktrees, so stash entries are counted per branch.
+- Filters such as Git LFS are not run, so LFS files can show up as modified when only their time stamp changed.
+
+## Install
+
+In Orca: Settings, Plugins, add the marketplace, search for **Session Check**, review the access and approve it. Needs Orca 1.4.259 or newer and `git` in your `PATH`.
+
+## Settings
+
+| Setting | Default | |
+|---|---|---|
+| Base branch | empty | Branch that counts as "already merged", for example `origin/main`. Empty detects it from `origin/HEAD`. |
+| Refresh interval | 30 s | How often the open panel rescans. |
 
 ## Why "Full access"?
 
@@ -43,19 +67,6 @@ Orca labels every plugin with a worker this way. This plugin:
 - makes no network requests and collects nothing
 - reads the time of the last commit and the first unpushed commit subjects (`git log`), the size of your changes (`git diff --shortstat`, with textconv and external diff switched off) and the modification time of changed files (`lstat`, no symlinks followed, no contents)
 - stores only the list of worktrees you hid, in the plugin's own storage
-
-Workspaces on other hosts (SSH) are listed as "not checked", and so are partial clones.
-
-## Install
-
-In Orca: Settings, Plugins, add the marketplace, search for **Session Check**, review the access and approve it. Needs Orca 1.4.259 or newer and `git` in your `PATH`.
-
-## Settings
-
-| Setting | Default | |
-|---|---|---|
-| Base branch | empty | Branch that counts as "already merged", for example `origin/main`. Empty detects it from `origin/HEAD`. |
-| Refresh interval | 30 s | How often the open panel rescans. |
 
 ## Development
 
