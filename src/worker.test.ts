@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { assert, hostError, mockHost, mountWorker, test } from 'orca/testing'
@@ -15,12 +15,18 @@ async function mount(host: ReturnType<typeof mockHost>): Promise<Worker> {
   workers.push(w)
   return w
 }
+// Tests start from fixed timings: no background scan unless a test asks for one, no 15 s wait
+const TEST_TUNING = { eventGapMs: 2000, minRescanMs: 0, startDelayMs: 1e9, secondMs: 1000, notifyGapMs: 10 * 60_000 }
 function t(name: string, fn: () => Promise<void>): void {
   test(name, async () => {
+    Object.assign(main.TUNING, TEST_TUNING)
+    // English unless a test says otherwise, whatever the machine's locale is
+    main.LOCALE.system = () => 'en-US'
     try {
       await fn()
     } finally {
-      main.TUNING.eventGapMs = 2000
+      Object.assign(main.TUNING, TEST_TUNING)
+      main.LOCALE.system = () => 'en-US'
       for (const w of workers.splice(0)) await w.deactivate().catch(() => undefined)
       for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true }).catch(() => undefined)
     }
@@ -63,6 +69,25 @@ type Ws = { id: string; kind: 'worktree' | 'folder'; name: string; project?: str
 const ws = (id: string, path: string, extra: Partial<Ws> = {}): Ws => ({ id, kind: 'worktree', name: id, project: 'acme-shop', path, branch: 'feat', hostId: null, ...extra })
 const list = (workspaces: Ws[], extra: object = {}) => ({ workspaces, truncated: false, ...extra })
 const status = (state: 'working' | 'permission' | 'done' | 'active' | 'inactive') => ({ state, unread: false, terminalCount: 1, lastActivityAt: null })
+const event = (id: string, state: 'working' | 'blocked' | 'waiting' | 'done', paneKey = `p-${id}`) => ({ workspaceId: null, workspaceListId: id, paneKey, state, receivedAt: 1 })
+/** The newest state the worker pushed to the panel */
+const lastState = (w: Worker) => [...w.posts].reverse().find((p) => p.event === 'sessions.changed')?.payload as SessionsState | undefined
+const sessionOf = (w: Worker, id: string) => lastState(w)?.sessions.find((x) => x.id === id)
+const checkedAt = (w: Worker, id: string) => sessionOf(w, id)?.checkedAt ?? 0
+type Bar = { id: string; text: string; tone: string; tooltip: string }
+const bars = (host: ReturnType<typeof mockHost>) => host.callsOf('statusBar.update') as Bar[]
+const bar = (host: ReturnType<typeof mockHost>) => bars(host).at(-1)
+const notes = (host: ReturnType<typeof mockHost>) => host.callsOf('notifications.show') as { title: string; body: string }[]
+/** A repository with n tracked files changed */
+async function dirtyRepo(n: number): Promise<string> {
+  const d = await repo()
+  for (let i = 0; i < n; i++) await writeFile(join(d, `f${i}.txt`), 'a\n')
+  git(d, 'add', '.')
+  git(d, 'commit', '-q', '-m', 'files')
+  for (let i = 0; i < n; i++) await writeFile(join(d, `f${i}.txt`), 'changed\n')
+  return d
+}
+const timeouts = () => (process as unknown as { getActiveResourcesInfo(): string[] }).getActiveResourcesInfo().filter((x) => x === 'Timeout').length
 
 t('lists local worktrees with their git state, dirty ones first', async () => {
   const clean = await repo()
@@ -158,29 +183,23 @@ t('the current workspace comes from workspace.changed', async () => {
   assert.equal((worker.posts.at(-1)?.payload as SessionsState).sessions.some((x) => x.current), false)
 })
 
-t('events rescan only while the panel is open, and only the workspace concerned', async () => {
+t('events rescan without the panel, and only the workspace concerned', async () => {
+  main.TUNING.eventGapMs = 20
   const a = await repo()
   const b = await repo()
   const host = mockHost({ results: { 'workspace.list': list([ws('w1', a), ws('w2', b)]) } })
   const worker = await mount(host)
-  const event = (id: string) => ({ workspaceId: null, workspaceListId: id, paneKey: 'p', state: 'working' as const, receivedAt: 1 })
-  // before the panel asked for anything: no work
-  await worker.emit('agent.status.changed', event('w1'))
-  await new Promise((r) => setTimeout(r, 50))
-  assert.equal(host.callsOf('workspace.list').length, 0)
-  await worker.request('sessions.get')
-  assert.equal(host.callsOf('workspace.list').length, 1)
+  // the panel never asks: the first event reads everything (the ids are not known yet)
+  await worker.emit('agent.status.changed', event('w1', 'working'))
+  await until(() => checkedAt(worker, 'w1') > 0 && checkedAt(worker, 'w2') > 0)
+  const w2Before = checkedAt(worker, 'w2')
+  const w1Before = checkedAt(worker, 'w1')
   await writeFile(join(a, 'new.txt'), 'x\n')
-  await worker.emit('agent.status.changed', event('w1'))
-  await until(() => host.callsOf('workspace.list').length >= 2)
-  assert.equal(host.callsOf('workspace.list').length, 2)
-  // the call count rises when the scan starts: wait for its result, not for its start
-  let s = (await worker.request('sessions.get')) as SessionsState
-  for (let i = 0; i < 100 && s.sessions.find((x) => x.id === 'w1')?.untracked !== 1; i++) {
-    await new Promise((r) => setTimeout(r, 50))
-    s = (await worker.request('sessions.get')) as SessionsState
-  }
-  assert.equal(s.sessions.find((x) => x.id === 'w1')?.untracked, 1)
+  await worker.emit('agent.status.changed', event('w1', 'working'))
+  await until(() => sessionOf(worker, 'w1')?.untracked === 1)
+  assert.equal(sessionOf(worker, 'w1')?.untracked, 1)
+  assert.ok(checkedAt(worker, 'w1') > w1Before)
+  assert.equal(checkedAt(worker, 'w2'), w2Before)
 })
 
 t('only changes are pushed to the panel', async () => {
@@ -241,12 +260,32 @@ t('hiding is stored and forgotten when the workspace is gone', async () => {
 })
 
 t('settings are read, clamped and validated', async () => {
-  const host = mockHost({ results: { 'workspace.list': list([]) }, settings: { intervalSeconds: 2, baseBranch: ' origin/dev ' } })
+  const host = mockHost({ results: { 'workspace.list': list([]) }, settings: { intervalSeconds: 2, baseBranch: ' origin/dev ', backgroundSeconds: 10, notifyOnAgentDone: false } })
   const worker = await mount(host)
-  assert.deepEqual(await worker.request('config.get'), { baseBranch: 'origin/dev', intervalSeconds: 10 })
-  assert.deepEqual(await worker.request('config.set', { intervalSeconds: 9999 }), { baseBranch: 'origin/dev', intervalSeconds: 300 })
+  assert.deepEqual(await worker.request('config.get'), { baseBranch: 'origin/dev', intervalSeconds: 10, notifyOnAgentDone: false, backgroundSeconds: 30, language: 'auto' })
+  assert.deepEqual(await worker.request('config.set', { intervalSeconds: 9999 }), { baseBranch: 'origin/dev', intervalSeconds: 300, notifyOnAgentDone: false, backgroundSeconds: 30, language: 'auto' })
   await worker.request('config.set', { intervalSeconds: 'x' as never, baseBranch: 5 as never })
-  assert.deepEqual(await worker.request('config.get'), { baseBranch: 'origin/dev', intervalSeconds: 300 })
+  assert.deepEqual(await worker.request('config.get'), { baseBranch: 'origin/dev', intervalSeconds: 300, notifyOnAgentDone: false, backgroundSeconds: 30, language: 'auto' })
+  const bg = async (value: unknown) => ((await worker.request('config.set', { backgroundSeconds: value as never })) as { backgroundSeconds: number }).backgroundSeconds
+  assert.equal(await bg(9999), 600)
+  assert.equal(await bg(5), 30)
+  assert.equal(await bg(0), 0)
+  assert.equal(await bg(-3), 0)
+  assert.equal(await bg(45.6), 46)
+  assert.equal(await bg('120'), 46)
+  assert.equal(await bg(Number.NaN), 46)
+  assert.equal(await bg(null), 46)
+  assert.equal(host.data().settings.backgroundSeconds, 46)
+  await worker.request('config.set', { notifyOnAgentDone: 'yes' as never })
+  assert.equal(((await worker.request('config.get')) as { notifyOnAgentDone: boolean }).notifyOnAgentDone, false)
+  await worker.request('config.set', { notifyOnAgentDone: true })
+  assert.equal(host.data().settings.notifyOnAgentDone, true)
+})
+
+t('without stored settings the defaults apply', async () => {
+  const host = mockHost({ results: { 'workspace.list': list([]) } })
+  const worker = await mount(host)
+  assert.deepEqual(await worker.request('config.get'), { baseBranch: '', intervalSeconds: 30, notifyOnAgentDone: true, backgroundSeconds: 120, language: 'auto' })
 })
 
 t('the refresh command scans and counts', async () => {
@@ -437,4 +476,398 @@ t('a refresh from the panel waits for a running targeted scan and reads every re
   await worker.emit('agent.status.changed', event)
   const s = (await worker.request('sessions.refresh')) as SessionsState
   assert.equal(s.sessions.find((x) => x.id === 'w2')?.untracked, 1)
+})
+
+// Status bar item
+
+t('the status bar says ok when nothing is uncommitted', async () => {
+  const host = mockHost({ results: { 'workspace.list': list([ws('w1', await repo()), ws('f1', await repo(), { kind: 'folder', branch: null })]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  assert.deepEqual(bar(host), { id: 'sessions', text: 'Sessions ok', tone: 'success', tooltip: 'Session Check: every worktree is committed' })
+})
+
+t('the status bar counts the worktrees with uncommitted files and names the biggest in the tooltip', async () => {
+  const dirs6 = [await dirtyRepo(1), await dirtyRepo(4), await dirtyRepo(2), await dirtyRepo(6), await dirtyRepo(3), await dirtyRepo(5)]
+  const rows = dirs6.map((d, i) => ws(`w${i}`, d, { name: `wt${i}` }))
+  const host = mockHost({ results: { 'workspace.list': list([...rows, ws('clean', await repo())]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  const b = bar(host)
+  assert.equal(b?.text, 'Sessions 6 open')
+  assert.equal(b?.tone, 'warning')
+  assert.equal(b?.tooltip, 'Uncommitted files: acme-shop / wt3 (6), acme-shop / wt5 (5), acme-shop / wt1 (4), acme-shop / wt4 (3), acme-shop / wt2 (2), +1 more')
+  // no file names, only counts and names of worktrees
+  assert.ok(!b?.tooltip.includes('.txt'))
+})
+
+t('hidden worktrees do not count in the status bar', async () => {
+  const host = mockHost({ storage: { hidden: { w1: 'keep' } }, results: { 'workspace.list': list([ws('w1', await repo(true)), ws('w2', await repo())]) } })
+  const worker = await mount(host)
+  const s = (await worker.request('sessions.get')) as SessionsState
+  assert.equal(s.sessions.find((x) => x.id === 'w1')?.hidden, true)
+  assert.equal(bar(host)?.text, 'Sessions ok')
+})
+
+t('unknown worktrees are never ok: ? when none could be checked, unchecked otherwise', async () => {
+  const host = mockHost({ results: { 'workspace.list': list([ws('g1', '/nonexistent-acme-path'), ws('g2', '/nonexistent-acme-path')]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  assert.equal(bar(host)?.text, 'Sessions ?')
+  host.respond('workspace.list', list([ws('g1', '/nonexistent-acme-path'), ws('w1', await repo())]))
+  await worker.request('sessions.refresh')
+  assert.equal(bar(host)?.text, 'Sessions 1 unchecked')
+  assert.notEqual(bar(host)?.tone, 'success')
+  // a dirty one is still counted as open
+  host.respond('workspace.list', list([ws('g1', '/nonexistent-acme-path'), ws('w1', await repo(true))]))
+  await worker.request('sessions.refresh')
+  assert.equal(bar(host)?.text, 'Sessions 1 open')
+})
+
+t('the status bar shows ? when the workspaces cannot be listed at all', async () => {
+  const host = mockHost({ results: { 'workspace.list': () => { throw hostError('unavailable', 'down') } } })
+  const worker = await mount(host)
+  await assert.rejects(() => worker.request('sessions.get'))
+  assert.equal(bar(host)?.text, 'Sessions ?')
+})
+
+t('the status bar is only updated when its text changes', async () => {
+  const host = mockHost({ results: { 'workspace.list': list([ws('w1', await repo())]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  await worker.request('sessions.refresh')
+  await worker.request('sessions.refresh')
+  assert.equal(bars(host).length, 1)
+})
+
+t('clicking the status bar item runs the rescan command', async () => {
+  const manifest = JSON.parse(await readFile(new URL('../orca-plugin.json', import.meta.url), 'utf8')) as {
+    contributes: { statusBarItems: { id: string; command?: string }[]; commands: { id: string }[] }
+  }
+  const item = manifest.contributes.statusBarItems.find((x) => x.id === 'sessions')
+  assert.equal(item?.command, 'refresh')
+  assert.ok(manifest.contributes.commands.some((c) => c.id === item?.command))
+  const host = mockHost({ results: { 'workspace.list': list([ws('w1', await repo(true))]) } })
+  const worker = await mount(host)
+  assert.equal(await worker.command('refresh'), '1 worktree')
+  assert.equal(bar(host)?.text, 'Sessions 1 open')
+})
+
+t('a workspace is not read again on account of events within the minimum gap', async () => {
+  main.TUNING.eventGapMs = 0
+  main.TUNING.minRescanMs = 400
+  const host = mockHost({ results: { 'workspace.list': list([ws('w1', await repo())]) } })
+  const worker = await mount(host)
+  const start = Date.now()
+  await worker.request('sessions.get')
+  for (let i = 0; i < 5; i++) await worker.emit('agent.status.changed', event('w1', 'working'))
+  await new Promise((r) => setTimeout(r, 100))
+  // the events wait for the gap, they are not dropped
+  assert.equal(host.callsOf('workspace.list').length, 1)
+  await until(() => host.callsOf('workspace.list').length >= 2)
+  assert.ok(Date.now() - start >= 400)
+  assert.equal(host.callsOf('workspace.list').length, 2)
+})
+
+// Background refresh
+
+t('the background timer fills the status bar without the panel, repeats and is cleared on deactivate', async () => {
+  main.TUNING.eventGapMs = 0
+  main.TUNING.startDelayMs = 10
+  main.TUNING.secondMs = 1 // 30 configured seconds = 30 ms
+  const before = timeouts()
+  const host = mockHost({ settings: { backgroundSeconds: 30 }, results: { 'workspace.list': list([]) } })
+  const worker = await mount(host)
+  await until(() => host.callsOf('workspace.list').length >= 3)
+  assert.ok(host.callsOf('workspace.list').length >= 3)
+  assert.equal(bar(host)?.text, 'Sessions ok')
+  assert.deepEqual(worker.posts.filter((p) => p.event !== 'sessions.changed'), [])
+  await worker.deactivate()
+  const count = host.callsOf('workspace.list').length
+  await new Promise((r) => setTimeout(r, 150))
+  assert.equal(host.callsOf('workspace.list').length, count)
+  // no timer of the worker is left behind
+  await until(() => timeouts() <= before)
+  assert.ok(timeouts() <= before, `${timeouts()} timers left, ${before} before`)
+})
+
+t('background refresh 0 scans once after the start and then only on events', async () => {
+  main.TUNING.eventGapMs = 0
+  main.TUNING.startDelayMs = 10
+  main.TUNING.secondMs = 1
+  const host = mockHost({ settings: { backgroundSeconds: 0 }, results: { 'workspace.list': list([]) } })
+  await mount(host)
+  await until(() => host.callsOf('workspace.list').length >= 1)
+  await new Promise((r) => setTimeout(r, 200))
+  assert.equal(host.callsOf('workspace.list').length, 1)
+})
+
+t('turning the background refresh on from the panel starts the timer', async () => {
+  main.TUNING.eventGapMs = 0
+  main.TUNING.secondMs = 1
+  const host = mockHost({ settings: { backgroundSeconds: 0 }, results: { 'workspace.list': list([]) } })
+  const worker = await mount(host)
+  await worker.request('config.get')
+  await new Promise((r) => setTimeout(r, 100))
+  assert.equal(host.callsOf('workspace.list').length, 0)
+  await worker.request('config.set', { backgroundSeconds: 30 })
+  await until(() => host.callsOf('workspace.list').length >= 2)
+  assert.ok(host.callsOf('workspace.list').length >= 2)
+  await worker.request('config.set', { backgroundSeconds: 0 })
+  await new Promise((r) => setTimeout(r, 60))
+  const count = host.callsOf('workspace.list').length
+  await new Promise((r) => setTimeout(r, 150))
+  assert.equal(host.callsOf('workspace.list').length, count)
+})
+
+t('a background tick never starts a second scan next to a running one', async () => {
+  main.TUNING.eventGapMs = 0
+  main.TUNING.startDelayMs = 5
+  main.TUNING.secondMs = 1
+  const dir = await repo()
+  // listing takes 100 ms, ticks come every 30 ms: overlapping scans would list at the same time
+  let active = 0
+  let most = 0
+  const host = mockHost({
+    settings: { backgroundSeconds: 30 },
+    results: {
+      'workspace.list': async () => {
+        active++
+        most = Math.max(most, active)
+        await new Promise((r) => setTimeout(r, 100))
+        active--
+        return list([ws('w1', dir)])
+      }
+    }
+  })
+  const worker = await mount(host)
+  await until(() => host.callsOf('workspace.list').length >= 3)
+  // events and the panel on top of it
+  await worker.emit('agent.status.changed', event('w1', 'working'))
+  await worker.request('sessions.refresh')
+  await until(() => host.callsOf('workspace.list').length >= 5)
+  assert.ok(host.callsOf('workspace.list').length >= 5)
+  assert.equal(most, 1)
+})
+
+// Notification when an agent finishes
+
+/** Agent works and finishes in w1, then the worker settles (the refresh waits for a running scan) */
+async function agentRun(worker: Worker, id = 'w1'): Promise<void> {
+  await worker.emit('agent.status.changed', event(id, 'working'))
+  await worker.emit('agent.status.changed', event(id, 'done'))
+  await worker.request('sessions.refresh')
+}
+
+t('a finished agent that leaves uncommitted files is notified after a fresh rescan, without the panel', async () => {
+  main.TUNING.eventGapMs = 20
+  const dir = await repo()
+  const host = mockHost({ results: { 'workspace.list': list([ws('w1', dir, { name: 'checkout' })]) } })
+  const worker = await mount(host)
+  await worker.emit('agent.status.changed', event('w1', 'working'))
+  await until(() => host.callsOf('workspace.list').length >= 1)
+  // the agent changes a file and stops
+  await writeFile(join(dir, 'a.txt'), 'changed by the agent\n')
+  await worker.emit('agent.status.changed', event('w1', 'done'))
+  await until(() => notes(host).length >= 1)
+  assert.deepEqual(notes(host), [{ title: 'Session Check', body: 'acme-shop / checkout: agent finished, 1 file uncommitted' }])
+  assert.ok(!notes(host)[0].body.includes('a.txt'))
+  assert.deepEqual(worker.refusals, [])
+})
+
+t('unpushed commits and new files are named too', async () => {
+  const { dir } = await withRemote()
+  await writeFile(join(dir, 'b.txt'), 'b\n')
+  git(dir, 'add', '.')
+  git(dir, 'commit', '-q', '-m', 'agent commit')
+  await writeFile(join(dir, 'c.txt'), 'new\n')
+  const host = mockHost({ results: { 'workspace.list': list([ws('w1', dir, { branch: 'main' })]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  await agentRun(worker)
+  assert.deepEqual(notes(host).map((n) => n.body), ['acme-shop / w1: agent finished, 1 new file, 1 commit unpushed'])
+})
+
+t('no notification for a clean worktree', async () => {
+  const { dir } = await withRemote()
+  const host = mockHost({ results: { 'workspace.list': list([ws('w1', dir, { branch: 'main' })]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  await agentRun(worker)
+  assert.deepEqual(notes(host), [])
+})
+
+t('at most one notification per worktree in 10 minutes', async () => {
+  const host = mockHost({ results: { 'workspace.list': list([ws('w1', await repo(true)), ws('w2', await repo(true))]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  await agentRun(worker)
+  await agentRun(worker)
+  assert.equal(notes(host).length, 1)
+  // another worktree has its own limit
+  await agentRun(worker, 'w2')
+  assert.equal(notes(host).length, 2)
+  // the gap is what holds the second one back
+  main.TUNING.notifyGapMs = 0
+  await agentRun(worker)
+  assert.equal(notes(host).length, 3)
+})
+
+t('no notification for a hidden worktree', async () => {
+  const host = mockHost({ storage: { hidden: { w1: 'keep' } }, results: { 'workspace.list': list([ws('w1', await repo(true))]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  await agentRun(worker)
+  assert.deepEqual(notes(host), [])
+})
+
+t('notifyOnAgentDone false turns the notification off', async () => {
+  const host = mockHost({ settings: { notifyOnAgentDone: false }, results: { 'workspace.list': list([ws('w1', await repo(true))]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  await agentRun(worker)
+  assert.deepEqual(notes(host), [])
+  await worker.request('config.set', { notifyOnAgentDone: true })
+  await agentRun(worker)
+  assert.equal(notes(host).length, 1)
+})
+
+t('only working or blocked to done counts as finished', async () => {
+  const host = mockHost({ results: { 'workspace.list': list([ws('w1', await repo(true))]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  // a done without a known start, and waiting to done
+  await worker.emit('agent.status.changed', event('w1', 'done'))
+  await worker.emit('agent.status.changed', event('w1', 'waiting'))
+  await worker.emit('agent.status.changed', event('w1', 'done'))
+  await worker.request('sessions.refresh')
+  assert.deepEqual(notes(host), [])
+  await worker.emit('agent.status.changed', event('w1', 'blocked'))
+  await worker.emit('agent.status.changed', event('w1', 'done'))
+  await worker.request('sessions.refresh')
+  assert.equal(notes(host).length, 1)
+})
+
+t('names in the notification are cleaned and cut', async () => {
+  const host = mockHost({ results: { 'workspace.list': list([ws('w1', await repo(true), { name: 'ok‮evil\n', project: 'p'.repeat(100) })]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  await agentRun(worker)
+  const body = notes(host)[0]?.body ?? ''
+  assert.equal(body, `${'p'.repeat(39)}… / ok?evil?: agent finished, 1 file uncommitted`)
+  assert.ok(!/[\u0000-\u001f‪-‮⁦-⁩]/.test(body))
+})
+
+t('a failed notification is logged, not thrown', async () => {
+  const host = mockHost({ capabilities: ['workspace:read', 'workspace:write', 'agent:read', 'storage:own', 'settings:own'], results: { 'workspace.list': list([ws('w1', await repo(true))]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  await agentRun(worker)
+  assert.ok(worker.logs.some((l) => l.startsWith('notify failed')))
+  assert.equal(worker.refusals.length, 1)
+})
+
+// Languages: the status bar and the notification are made in the worker
+
+t('the language setting is validated: unknown values are auto, only known ones are stored', async () => {
+  const host = mockHost({ results: { 'workspace.list': list([]) }, settings: { language: 'klingon' } })
+  const worker = await mount(host)
+  assert.equal(((await worker.request('config.get')) as { language: string }).language, 'auto')
+  assert.equal(((await worker.request('config.set', { language: 'de' })) as { language: string }).language, 'de')
+  assert.equal(host.data().settings.language, 'de')
+  for (const bad of ['fr', 'DE', '', 5, null]) {
+    assert.equal(((await worker.request('config.set', { language: bad as never })) as { language: string }).language, 'de')
+  }
+  assert.equal(host.data().settings.language, 'de')
+  await worker.request('config.set', { language: 'auto' })
+  assert.equal(host.data().settings.language, 'auto')
+})
+
+t('the status bar and its tooltip in German when the setting says de', async () => {
+  const host = mockHost({ settings: { language: 'de' }, results: { 'workspace.list': list([ws('w1', await dirtyRepo(2), { name: 'checkout' }), ws('w2', await repo())]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  assert.deepEqual(bar(host), { id: 'sessions', text: 'Sessions 1 offen', tone: 'warning', tooltip: 'Nicht committete Dateien: acme-shop / checkout (2)' })
+  assert.equal(await worker.command('refresh'), '2 Worktrees')
+})
+
+t('auto follows the locale the panel tells, the status bar changes at once', async () => {
+  const host = mockHost({ results: { 'workspace.list': list([ws('w1', await repo())]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  assert.equal(bar(host)?.text, 'Sessions ok')
+  assert.deepEqual(await worker.request('ui.locale', { locale: 'es-MX' }), { ok: true })
+  await until(() => bar(host)?.text === 'Sesiones ok')
+  assert.deepEqual(bar(host), { id: 'sessions', text: 'Sesiones ok', tone: 'success', tooltip: 'Session Check: todos los worktrees están confirmados' })
+  // an explicit setting wins over the locale
+  await worker.request('config.set', { language: 'de' })
+  await until(() => bar(host)?.text === 'Sessions ok' && bar(host)?.tooltip.includes('alle Worktrees') === true)
+  assert.equal(bar(host)?.tooltip, 'Session Check: alle Worktrees sind committet')
+  // a locale Orca might send that is none of the three: English
+  await worker.request('config.set', { language: 'auto' })
+  await worker.request('ui.locale', { locale: 'fr-FR' })
+  await until(() => bar(host)?.tooltip === 'Session Check: every worktree is committed')
+  assert.equal(bar(host)?.tooltip, 'Session Check: every worktree is committed')
+})
+
+t('without a locale from the panel the system locale counts, the panel one wins', async () => {
+  main.LOCALE.system = () => 'de-AT'
+  const host = mockHost({ results: { 'workspace.list': list([ws('w1', await repo(), { status: status('working') })]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  assert.equal(bar(host)?.tooltip, 'Session Check: alle Worktrees sind committet')
+  await worker.request('ui.locale', { locale: 'en-US' })
+  await until(() => bar(host)?.tooltip === 'Session Check: every worktree is committed')
+  assert.equal(bar(host)?.tooltip, 'Session Check: every worktree is committed')
+})
+
+t('a system locale that cannot be read means English', async () => {
+  main.LOCALE.system = () => {
+    throw new Error('no Intl')
+  }
+  const host = mockHost({ results: { 'workspace.list': list([ws('w1', await repo())]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  assert.equal(bar(host)?.text, 'Sessions ok')
+})
+
+t('ui.locale only takes a BCP-47 tag', async () => {
+  const host = mockHost({ results: { 'workspace.list': list([ws('w1', await repo())]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  for (const bad of [5, '', 'de DE', 'x'.repeat(80), '<script>', null]) {
+    await assert.rejects(() => worker.request('ui.locale', { locale: bad as never }), /Invalid request/)
+  }
+  assert.equal(bar(host)?.text, 'Sessions ok')
+})
+
+t('the notification in German and in Spanish', async () => {
+  const host = mockHost({ settings: { language: 'de' }, results: { 'workspace.list': list([ws('w1', await repo(true), { name: 'checkout' })]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  await agentRun(worker)
+  assert.deepEqual(notes(host), [{ title: 'Session Check', body: 'acme-shop / checkout: Agent fertig, 1 Datei nicht committet' }])
+  // one worker at a time: deactivate() stops the worker that was mounted last
+  await worker.deactivate()
+  const { dir } = await withRemote()
+  await writeFile(join(dir, 'b.txt'), 'b\n')
+  git(dir, 'add', '.')
+  git(dir, 'commit', '-q', '-m', 'agent commit')
+  await writeFile(join(dir, 'c.txt'), 'new\n')
+  await writeFile(join(dir, 'd.txt'), 'new\n')
+  const es = mockHost({ settings: { language: 'es' }, results: { 'workspace.list': list([ws('w1', dir, { branch: 'main' })]) } })
+  const w2 = await mount(es)
+  await w2.request('sessions.get')
+  await agentRun(w2)
+  assert.deepEqual(notes(es).map((n) => n.body), ['acme-shop / w1: agente terminado, 2 archivos nuevos, 1 commit sin push'])
+})
+
+t('errors reach the panel with a message code, the text stays English', async () => {
+  const host = mockHost({ results: { 'workspace.list': list([ws('gone', '/nonexistent-acme-path'), ws('folder', '/tmp', { kind: 'folder', branch: null })]) } })
+  const worker = await mount(host)
+  const s = (await worker.request('sessions.get')) as SessionsState
+  const by = Object.fromEntries(s.sessions.map((x) => [x.id, x]))
+  assert.equal(by.gone.error, 'folder not found')
+  assert.equal(by.gone.errorCode, 'err.folderNotFound')
+  assert.equal(by.folder.errorCode, 'err.folderWorkspace')
 })

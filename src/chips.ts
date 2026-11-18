@@ -1,4 +1,5 @@
 // Short labels for a row of the panel, derived from the numbers of a session (pure, no panel code)
+import { errorText, tr, type Lang, type MsgKey } from './i18n'
 import type { Session } from './protocol'
 
 /** Red is kept for what is really wrong (conflict, merge or rebase running). Open work is calm: blue and amber. */
@@ -8,12 +9,15 @@ export type Chip = { text: string; tone: ChipTone }
 /** Group of the list a session belongs to; the order is the order on screen */
 export type Group = 'dirty' | 'keep' | 'check' | 'safe' | 'unknown'
 export const GROUPS: readonly Group[] = ['dirty', 'keep', 'check', 'safe', 'unknown']
-export const GROUP_TITLE: Record<Group, string> = {
-  dirty: 'Uncommitted files',
-  keep: 'Keep open',
-  check: 'Check first',
-  safe: 'Can close',
-  unknown: 'Not checked'
+const GROUP_KEY: Record<Group, MsgKey> = {
+  dirty: 'group.dirty',
+  keep: 'group.keep',
+  check: 'group.check',
+  safe: 'group.safe',
+  unknown: 'group.unknown'
+}
+export function groupTitle(group: Group, lang: Lang = 'en'): string {
+  return tr(lang, GROUP_KEY[group] ?? 'group.unknown')
 }
 
 export function groupOf(s: Pick<Session, 'uncommitted' | 'verdict'>): Group {
@@ -22,42 +26,47 @@ export function groupOf(s: Pick<Session, 'uncommitted' | 'verdict'>): Group {
 }
 
 /** The things worth a glance, red first. A clean worktree gets one green "clean" chip. */
-export function chips(s: Session): Chip[] {
+export function chips(s: Session, lang: Lang = 'en'): Chip[] {
   const out: Chip[] = []
-  if (s.uncommitted > 0) out.push({ text: `${s.uncommitted} changed`, tone: 'accent' })
-  if (s.conflicts > 0) out.push({ text: `${s.conflicts} ${s.conflicts === 1 ? 'conflict' : 'conflicts'}`, tone: 'danger' })
-  if (s.ahead > 0 && s.merged !== true) out.push({ text: `${s.ahead} unpushed`, tone: 'warning' })
-  if (s.agent === 'working') out.push({ text: 'agent working', tone: 'accent' })
-  if (s.agent === 'permission') out.push({ text: 'agent waits', tone: 'warning' })
-  if (s.operation) out.push({ text: s.operation, tone: 'danger' })
-  if (s.untracked > 0) out.push({ text: `${s.untracked} untracked`, tone: 'neutral' })
-  if (s.stash > 0) out.push({ text: `${s.stash} stash`, tone: 'neutral' })
+  const add = (key: MsgKey, tone: ChipTone, params?: Record<string, string | number>) => out.push({ text: tr(lang, key, params), tone })
+  if (s.uncommitted > 0) add('chip.changed', 'accent', { n: s.uncommitted })
+  if (s.conflicts > 0) add('chip.conflicts', 'danger', { n: s.conflicts })
+  if (s.ahead > 0 && s.merged !== true) add('chip.unpushed', 'warning', { n: s.ahead })
+  if (s.agent === 'working') add('chip.agentWorking', 'accent')
+  if (s.agent === 'permission') add('chip.agentWaits', 'warning')
+  // The operation is one of git's fixed names (merge, rebase, ...), inserted as text
+  if (s.operation) add('chip.operation', 'danger', { op: s.operation })
+  if (s.untracked > 0) add('chip.untracked', 'neutral', { n: s.untracked })
+  if (s.stash > 0) add('chip.stash', 'neutral', { n: s.stash })
   // Why a worktree without upstream or with local commits can still be closed
-  if (!s.error && s.merged === true && (s.ahead > 0 || !s.upstream || s.upstreamGone) && s.uncommitted === 0) out.push({ text: 'merged', tone: 'success' })
+  if (!s.error && s.merged === true && (s.ahead > 0 || !s.upstream || s.upstreamGone) && s.uncommitted === 0) add('chip.merged', 'success')
   if (!s.error) {
     const detached = s.branch === null
-    if (detached && s.merged !== true) out.push({ text: 'detached', tone: 'neutral' })
-    else if (!detached && s.upstreamGone && s.merged !== true) out.push({ text: 'upstream gone', tone: 'warning' })
-    else if (!detached && !s.upstream && s.merged !== true) out.push({ text: 'no upstream', tone: 'neutral' })
-    if (s.submodules) out.push({ text: 'submodules not checked', tone: 'neutral' })
-    if (s.behind > 0) out.push({ text: `${s.behind} behind`, tone: 'neutral' })
+    if (detached && s.merged !== true) add('chip.detached', 'neutral')
+    else if (!detached && s.upstreamGone && s.merged !== true) add('chip.upstreamGone', 'warning')
+    else if (!detached && !s.upstream && s.merged !== true) add('chip.noUpstream', 'neutral')
+    if (s.submodules) add('chip.submodules', 'neutral')
+    if (s.behind > 0) add('chip.behind', 'neutral', { n: s.behind })
   }
-  if (s.error) out.push({ text: s.error, tone: 'neutral' })
-  else if (s.reasons.includes('agent status unknown')) out.push({ text: 'agent unknown', tone: 'neutral' })
-  if (out.length === 0) out.push({ text: 'clean', tone: 'success' })
+  if (s.error) out.push({ text: s.errorCode ? tr(lang, s.errorCode) : errorText(lang, s.error), tone: 'neutral' })
+  else if (s.reasons.includes('agent status unknown')) add('chip.agentUnknown', 'neutral')
+  if (out.length === 0) add('chip.clean', 'success')
   return out
 }
 
 /** Git's two-letter code (X = index, Y = worktree) as a word: "??" is a new file, ".M" an edited one */
-export function stateLabel(code: string): string {
-  if (code === '??') return 'new'
+export function stateLabel(code: string, lang: Lang = 'en'): string {
+  if (code === '??') return tr(lang, 'file.new')
   if (code.length !== 2) return code
   const [x, y] = code
-  if (x === 'U' || y === 'U' || code === 'AA' || code === 'DD') return 'conflict'
-  const word = (c: string) => (c === 'M' ? 'edited' : c === 'A' ? 'added' : c === 'D' ? 'deleted' : c === 'R' ? 'renamed' : c === 'C' ? 'copied' : c === 'T' ? 'type changed' : '')
+  if (x === 'U' || y === 'U' || code === 'AA' || code === 'DD') return tr(lang, 'file.conflict')
+  const word = (c: string): string => {
+    const key: MsgKey | null = c === 'M' ? 'file.edited' : c === 'A' ? 'file.added' : c === 'D' ? 'file.deleted' : c === 'R' ? 'file.renamed' : c === 'C' ? 'file.copied' : c === 'T' ? 'file.typeChanged' : null
+    return key ? tr(lang, key) : ''
+  }
   const staged = word(x)
   const open = word(y)
-  if (staged && open) return `${staged}, staged + ${open}`
-  if (staged) return `${staged}, staged`
+  if (staged && open) return tr(lang, 'file.stagedAndOpen', { what: staged, open })
+  if (staged) return tr(lang, 'file.staged', { what: staged })
   return open || code
 }

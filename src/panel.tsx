@@ -7,6 +7,7 @@ import {
   Callout,
   Collapsible,
   EmptyState,
+  env,
   Heading,
   IconButton,
   Input,
@@ -19,17 +20,19 @@ import {
   set,
   Skeleton,
   Stack,
+  Switch,
   Text,
   type PanelContext
 } from 'orca'
-import { chips, stateLabel, GROUP_TITLE, GROUPS, groupOf, type Group } from './chips'
+import { chips, stateLabel, groupTitle, GROUPS, groupOf, type Group } from './chips'
+import { errorText, LANGUAGE_NAMES, LANGUAGE_SETTINGS, languageSetting, resolveLang, tr, type Lang, type LanguageSetting } from './i18n'
 import type { Config, Session, SessionsState } from './protocol'
 
 type Filter = 'all' | 'changes' | 'safe'
 type Grouping = 'status' | 'project'
 
 const state = atom<SessionsState | null>(null)
-const config = atom<Config>({ baseBranch: '', intervalSeconds: 30 })
+const config = atom<Config>({ baseBranch: '', intervalSeconds: 30, notifyOnAgentDone: true, backgroundSeconds: 120, language: 'auto' })
 // Filter and grouping are remembered between runs; the stored value is checked before it is used
 const filter = atom<Filter>('filter', 'all', { persist: 'plugin' })
 const query = atom('')
@@ -40,8 +43,23 @@ const showHidden = atom(false)
 const baseDraft = atom<string | null>(null)
 
 const INTERVALS = [10, 30, 60, 120, 300]
+const BACKGROUND = [0, 30, 60, 120, 300, 600]
 
 const message = (err: unknown) => String(err instanceof Error ? err.message : err)
+const MAX_WORKSPACES = 100
+
+/** Orca's UI language, read while rendering */
+function uiLocale(): string {
+  try {
+    return typeof env.locale === 'string' ? env.locale : ''
+  } catch {
+    return ''
+  }
+}
+/** The language the panel speaks now: an explicit setting wins, auto follows Orca */
+function currentLang(): Lang {
+  return resolveLang(read(config).language, uiLocale())
+}
 
 async function refresh(quiet = false): Promise<void> {
   if (!quiet) set(refreshing, true)
@@ -89,11 +107,14 @@ async function updateConfig(change: Partial<Config>): Promise<void> {
 
 export function setup(ctx: PanelContext): void {
   ctx.subscriptions.push(plugin.on('sessions.changed', (s) => set(state, s)))
+  // The worker has no locale API: it learns Orca's language from the panel (status bar, notification)
+  const locale = uiLocale()
+  if (locale) void plugin.request('ui.locale', { locale }).catch(() => undefined)
   void plugin
     .request('sessions.get')
     .then((s) => set(state, s))
     .catch((err) => set(notice, message(err)))
-  // The open panel looks again from time to time; the worker itself runs no timer
+  // The open panel looks again from time to time; the worker's own background scan is slower
   let timer: ReturnType<typeof setInterval> | undefined
   rearm = (seconds) => {
     if (timer) clearInterval(timer)
@@ -112,16 +133,14 @@ export function setup(ctx: PanelContext): void {
   })
 }
 
-const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
-
 /** First line of a row: the project and the worktree, e.g. "acme-shop / checkout" */
 function title(s: Session): string {
   return s.project && s.project !== s.name ? `${s.project} / ${s.name}` : s.name
 }
 
 /** Second line: the branch, only when it tells more than the name */
-function subline(s: Session): string | null {
-  const branch = s.branch ?? 'detached HEAD'
+function subline(s: Session, lang: Lang): string | null {
+  const branch = s.branch ?? tr(lang, 'card.detached')
   return branch === s.name ? null : branch
 }
 
@@ -137,17 +156,19 @@ function glance(s: Session): string | null {
 }
 
 /** Details behind the fold: changed files and the numbers that only matter when you look closer */
-function detailNotes(s: Session): string[] {
+function detailNotes(s: Session, lang: Lang): string[] {
   const notes: string[] = []
-  if (s.staged > 0) notes.push(`${s.staged} of the changed files staged`)
-  if (s.upstream) notes.push(`upstream ${s.upstream}`)
-  if (s.stashTotal > s.stash) notes.push(`${plural(s.stashTotal - s.stash, 'stash entry', 'stash entries')} on other branches`)
-  if (s.merged === true && s.ahead > 0) notes.push('all commits are already in the base branch')
+  if (s.staged > 0) notes.push(tr(lang, 'card.staged', { n: s.staged }))
+  if (s.upstream) notes.push(tr(lang, 'card.upstream', { name: s.upstream }))
+  if (s.stashTotal > s.stash) notes.push(tr(lang, 'card.otherStash', { n: s.stashTotal - s.stash }))
+  if (s.merged === true && s.ahead > 0) notes.push(tr(lang, 'card.allMerged'))
   return notes
 }
 
 function SessionCard({ s }: { s: Session }) {
-  const notes = detailNotes(s)
+  const lang = currentLang()
+  const sub = subline(s, lang)
+  const notes = detailNotes(s, lang)
   const hasDetails = s.files.length > 0 || notes.length > 0 || s.unpushed.length > 0
   const look = glance(s)
   return (
@@ -161,20 +182,20 @@ function SessionCard({ s }: { s: Session }) {
           </Row>
           <Row gap="xs" align="center">
             <Button size="xs" variant="outline" onPress={() => void open(s)}>
-              {`Open`}
+              {tr(lang, 'card.open')}
             </Button>
             <Button size="xs" variant="ghost" onPress={() => void hide(s, !s.hidden)}>
-              {s.hidden ? 'Show' : 'Hide'}
+              {s.hidden ? tr(lang, 'card.show') : tr(lang, 'card.hide')}
             </Button>
           </Row>
         </Row>
-        {subline(s) ? (
+        {sub ? (
           <Text size="xs" muted truncate>
-            {subline(s)}
+            {sub}
           </Text>
         ) : null}
         <Row gap="xs" wrap>
-          {chips(s).map((c) => (
+          {chips(s, lang).map((c) => (
             <Badge key={c.text} tone={c.tone}>
               {c.text}
             </Badge>
@@ -187,20 +208,20 @@ function SessionCard({ s }: { s: Session }) {
         ) : null}
         {s.dirtySince || s.lastCommitAt || s.lastActiveAt ? (
           <Text size="xs" muted>
-            {s.dirtySince ? <>oldest change <RelativeTime at={s.dirtySince} format="short" /></> : null}
+            {s.dirtySince ? <>{`${tr(lang, 'card.oldestChange')} `}<RelativeTime at={s.dirtySince} format="short" /></> : null}
             {s.dirtySince && (s.lastCommitAt || s.lastActiveAt) ? ' · ' : null}
-            {s.lastCommitAt ? <>commit <RelativeTime at={s.lastCommitAt} format="short" /></> : null}
+            {s.lastCommitAt ? <>{`${tr(lang, 'card.commit')} `}<RelativeTime at={s.lastCommitAt} format="short" /></> : null}
             {s.lastCommitAt && s.lastActiveAt ? ' · ' : null}
-            {s.lastActiveAt ? <>active <RelativeTime at={s.lastActiveAt} format="short" /></> : null}
+            {s.lastActiveAt ? <>{`${tr(lang, 'card.active')} `}<RelativeTime at={s.lastActiveAt} format="short" /></> : null}
           </Text>
         ) : null}
         {hasDetails ? (
-          <Collapsible title={s.files.length > 0 ? `Files (${s.files.length + s.moreFiles})` : 'Details'}>
+          <Collapsible title={s.files.length > 0 ? tr(lang, 'card.files', { n: s.files.length + s.moreFiles }) : tr(lang, 'card.details')}>
             <Stack gap="xs">
               {s.unpushed.length > 0 ? (
                 <Stack gap="xs">
                   <Text size="xs" weight="semibold">
-                    {`Unpushed: ${s.ahead}`}
+                    {tr(lang, 'card.unpushed', { n: s.ahead })}
                   </Text>
                   {s.unpushed.map((m, i) => (
                     <Text key={`${i}:${m}`} size="xs" truncate>
@@ -209,19 +230,19 @@ function SessionCard({ s }: { s: Session }) {
                   ))}
                   {s.ahead > s.unpushed.length ? (
                     <Text size="xs" muted>
-                      {`…and ${s.ahead - s.unpushed.length} more`}
+                      {tr(lang, 'card.more', { n: s.ahead - s.unpushed.length })}
                     </Text>
                   ) : null}
                 </Stack>
               ) : null}
               {s.files.map((f, i) => (
                 <Text key={`${i}:${f.path}`} size="xs" truncate>
-                  {`${stateLabel(f.state)}: ${f.path}`}
+                  {`${stateLabel(f.state, lang)}: ${f.path}`}
                 </Text>
               ))}
               {s.moreFiles > 0 ? (
                 <Text size="xs" muted>
-                  {`…and ${s.moreFiles} more`}
+                  {tr(lang, 'card.more', { n: s.moreFiles })}
                 </Text>
               ) : null}
               {notes.map((n) => (
@@ -238,9 +259,9 @@ function SessionCard({ s }: { s: Session }) {
 }
 
 /** Worktrees of the same project together; projects with the most uncommitted files first */
-function byProject(list: Session[]): [string, Session[]][] {
+function byProject(list: Session[], none: string): [string, Session[]][] {
   const map = new Map<string, Session[]>()
-  for (const s of list) map.set(s.project ?? '(no project)', [...(map.get(s.project ?? '(no project)') ?? []), s])
+  for (const s of list) map.set(s.project ?? none, [...(map.get(s.project ?? none) ?? []), s])
   const dirty = (items: Session[]) => items.reduce((n, x) => n + x.uncommitted, 0)
   return [...map.entries()].sort((a, b) => dirty(b[1]) - dirty(a[1]) || a[0].localeCompare(b[0]))
 }
@@ -248,7 +269,7 @@ function byProject(list: Session[]): [string, Session[]][] {
 function GroupTitle({ group, count }: { group: Group; count: number }) {
   return (
     <Row justify="between">
-      <Text weight="semibold">{GROUP_TITLE[group]}</Text>
+      <Text weight="semibold">{groupTitle(group, currentLang())}</Text>
       <Badge>{String(count)}</Badge>
     </Row>
   )
@@ -257,12 +278,21 @@ function GroupTitle({ group, count }: { group: Group; count: number }) {
 function SettingsBox() {
   const c = read(config)
   const draft = read(baseDraft)
+  const lang = currentLang()
+  const every = (n: number) => tr(lang, 'settings.every', { n })
+  const langLabel = (v: LanguageSetting) => (v === 'auto' ? tr(lang, 'settings.languageAuto') : LANGUAGE_NAMES[v])
   return (
-    <Collapsible title="Settings" description="base branch, refresh">
+    <Collapsible title={tr(lang, 'settings.title')} description={tr(lang, 'settings.description')}>
       <Stack gap="sm">
+        <Select
+          label={tr(lang, 'settings.language')}
+          value={languageSetting(c.language)}
+          options={LANGUAGE_SETTINGS.map((v) => ({ value: v, label: langLabel(v) }))}
+          onChange={(v) => void updateConfig({ language: languageSetting(v) })}
+        />
         <Input
-          label="Base branch (empty = detect from origin/HEAD)"
-          placeholder="origin/main"
+          label={tr(lang, 'settings.base')}
+          placeholder={tr(lang, 'settings.basePlaceholder')}
           value={draft ?? c.baseBranch}
           maxLength={200}
           onChange={(v) => set(baseDraft, v)}
@@ -272,10 +302,24 @@ function SettingsBox() {
           }}
         />
         <Select
-          label="Refresh while the panel is open"
+          label={tr(lang, 'settings.interval')}
           value={String(c.intervalSeconds)}
-          options={INTERVALS.map((n) => ({ value: String(n), label: `every ${n} seconds` }))}
+          options={INTERVALS.map((n) => ({ value: String(n), label: every(n) }))}
           onChange={(v) => void updateConfig({ intervalSeconds: Number(v) })}
+        />
+        <Select
+          label={tr(lang, 'settings.background')}
+          value={String(c.backgroundSeconds)}
+          options={(BACKGROUND.includes(c.backgroundSeconds) ? BACKGROUND : [...BACKGROUND, c.backgroundSeconds].sort((a, b) => a - b)).map((n) => ({
+            value: String(n),
+            label: n === 0 ? tr(lang, 'settings.backgroundOff') : every(n)
+          }))}
+          onChange={(v) => void updateConfig({ backgroundSeconds: Number(v) })}
+        />
+        <Switch
+          label={tr(lang, 'settings.notify')}
+          checked={c.notifyOnAgentDone}
+          onChange={(v) => void updateConfig({ notifyOnAgentDone: v })}
         />
       </Stack>
     </Collapsible>
@@ -284,7 +328,9 @@ function SettingsBox() {
 
 export default function Panel() {
   const s = read(state)
-  if (!s) return read(notice) ? <Callout tone="danger">{read(notice)}</Callout> : <Skeleton lines={4} label="Loading" />
+  const lang = currentLang()
+  const note = read(notice) ? errorText(lang, read(notice)) : ''
+  if (!s) return note ? <Callout tone="danger">{note}</Callout> : <Skeleton lines={4} label={tr(lang, 'panel.loading')} />
   const stored = read(filter)
   const f: Filter = stored === 'changes' || stored === 'safe' ? stored : 'all'
   const by = read(grouping) === 'project' ? 'project' : 'status'
@@ -301,24 +347,24 @@ export default function Panel() {
     (g) => g.items.length > 0 && (f === 'all' || (f === 'changes' && g.group === 'dirty') || (f === 'safe' && g.group === 'safe'))
   )
   const FILTERS: [Filter, string][] = [
-    ['all', `All ${counted.length}`],
-    ['changes', `Uncommitted ${dirty}`],
-    ['safe', `Can close ${safe}`]
+    ['all', tr(lang, 'filter.all', { n: counted.length })],
+    ['changes', tr(lang, 'filter.changes', { n: dirty })],
+    ['safe', tr(lang, 'filter.safe', { n: safe })]
   ]
   return (
     <Stack gap="md">
       <Row justify="between" align="center">
         <Heading level={3}>Session Check</Heading>
-        <IconButton icon="refresh" label="Rescan worktrees" disabled={read(refreshing)} onPress={() => void refresh()} />
+        <IconButton icon="refresh" label={tr(lang, 'panel.rescan')} disabled={read(refreshing)} onPress={() => void refresh()} />
       </Row>
       <Text muted={dirty === 0} tone={dirty === 0 ? 'success' : undefined}>
-        {dirty > 0 ? `${plural(dirty, 'worktree')} with uncommitted files` : 'Everything is committed'}
+        {dirty > 0 ? tr(lang, 'panel.dirtyCount', { n: dirty }) : tr(lang, 'panel.allCommitted')}
       </Text>
-      {read(notice) ? <Callout tone="danger">{read(notice)}</Callout> : null}
-      {s.truncated ? <Callout tone="warning">Only the first 100 workspaces are checked.</Callout> : null}
+      {note ? <Callout tone="danger">{note}</Callout> : null}
+      {s.truncated ? <Callout tone="warning">{tr(lang, 'panel.truncated', { n: MAX_WORKSPACES })}</Callout> : null}
       {current ? (
         <Stack gap="sm">
-          <Text weight="semibold">Current session</Text>
+          <Text weight="semibold">{tr(lang, 'panel.current')}</Text>
           <SessionCard s={current} />
         </Stack>
       ) : null}
@@ -329,23 +375,23 @@ export default function Panel() {
           </Button>
         ))}
       </Row>
-      <Input label="Search worktrees" labelHidden type="search" placeholder="Search project, worktree or branch" value={read(query)} maxLength={100} onChange={(v) => set(query, v)} />
+      <Input label={tr(lang, 'search.label')} labelHidden type="search" placeholder={tr(lang, 'search.placeholder')} value={read(query)} maxLength={100} onChange={(v) => set(query, v)} />
       <Row gap="xs" align="center">
         <Text size="xs" muted>
-          Group by
+          {tr(lang, 'group.by')}
         </Text>
         {(['status', 'project'] as Grouping[]).map((g) => (
           <Button key={g} size="xs" variant={by === g ? 'solid' : 'ghost'} onPress={() => set(grouping, g)}>
-            {g}
+            {tr(lang, g === 'project' ? 'group.project' : 'group.status')}
           </Button>
         ))}
       </Row>
       {s.sessions.length === 0 ? (
-        <EmptyState title="No workspaces" description="Add a workspace in Orca, then rescan." />
+        <EmptyState title={tr(lang, 'empty.none.title')} description={tr(lang, 'empty.none.text')} />
       ) : groups.length === 0 ? (current ? null : (
-        <EmptyState title="Nothing matches" description="No worktree fits the filter." />)
+        <EmptyState title={tr(lang, 'empty.filter.title')} description={tr(lang, 'empty.filter.text')} />)
       ) : by === 'project' ? (
-        byProject(groups.flatMap((g) => g.items)).map(([project, items]) => (
+        byProject(groups.flatMap((g) => g.items), tr(lang, 'group.noProject')).map(([project, items]) => (
           <Stack key={project} gap="sm">
             <Row justify="between">
               <Text weight="semibold">{project}</Text>
@@ -369,7 +415,7 @@ export default function Panel() {
           )
           // Quiet groups fold away; the ones that need a decision stay open
           return group === 'unknown' || group === 'safe' ? (
-            <Collapsible key={group} title={GROUP_TITLE[group]} description={String(items.length)} defaultOpen={group === 'safe'}>
+            <Collapsible key={group} title={groupTitle(group, lang)} description={String(items.length)} defaultOpen={group === 'safe'}>
               {cards}
             </Collapsible>
           ) : (
@@ -382,12 +428,12 @@ export default function Panel() {
       )}
       {hiddenCount ? (
         <Button variant="ghost" onPress={() => set(showHidden, !read(showHidden))}>
-          {read(showHidden) ? 'Hide hidden worktrees' : `Show hidden worktrees (${hiddenCount})`}
+          {read(showHidden) ? tr(lang, 'hidden.hide') : tr(lang, 'hidden.show', { n: hiddenCount })}
         </Button>
       ) : null}
       <Separator />
       <Text size="xs" muted>
-        Unpushed and behind use the last known upstream. Nothing is fetched.
+        {tr(lang, 'panel.footer')}
       </Text>
       <SettingsBox />
     </Stack>

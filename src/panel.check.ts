@@ -1,11 +1,11 @@
 // Scenarios for `orca plugin check` and `orca plugin shot --scenario`, with demo data only
 import { defineCheck } from 'orca/testing'
-import type { Session, SessionsState } from './protocol'
+import type { Config, Session, SessionsState } from './protocol'
 
 const base: Session = {
   id: '', name: '', project: 'acme-shop', branch: 'main', current: false, hidden: false, verdict: 'safe', reasons: ['clean, nothing unpushed'],
   uncommitted: 0, staged: 0, untracked: 0, conflicts: 0, ahead: 0, behind: 0, upstream: 'origin/main', upstreamGone: false, submodules: false, stash: 0, stashTotal: 0,
-  merged: null, operation: null, agent: null, files: [], moreFiles: 0, error: null, lastCommitAt: null, lastActiveAt: null, unpushed: [], added: null, removed: null, dirtySince: null, checkedAt: Date.now()
+  merged: null, operation: null, agent: null, files: [], moreFiles: 0, error: null, errorCode: null, lastCommitAt: null, lastActiveAt: null, unpushed: [], added: null, removed: null, dirtySince: null, checkedAt: Date.now()
 }
 
 const state: SessionsState = {
@@ -24,14 +24,16 @@ const state: SessionsState = {
     { ...base, id: 'w3', name: 'new-footer', branch: 'feature/footer', verdict: 'check', reasons: ['2 untracked', '1 stash entry'], untracked: 2, stash: 1, stashTotal: 1, upstream: null },
     { ...base, id: 'w4', name: 'docs-update', project: 'acme-docs', branch: 'main', verdict: 'safe', behind: 4 },
     {
-      ...base, id: 'w5', name: 'old-spike', project: 'acme-docs', branch: 'spike/search', verdict: 'unknown', reasons: ['folder not found'], error: 'folder not found', upstream: null
+      ...base, id: 'w5', name: 'old-spike', project: 'acme-docs', branch: 'spike/search', verdict: 'unknown', reasons: ['folder not found'], error: 'folder not found', errorCode: 'err.folderNotFound', upstream: null
     }
   ]
 }
-const config = { baseBranch: '', intervalSeconds: 30 }
+const config: Config = { baseBranch: '', intervalSeconds: 30, notifyOnAgentDone: true, backgroundSeconds: 120, language: 'auto' }
 
 export default defineCheck({
   list: { requests: { 'sessions.get': state, 'config.get': config } },
   byProject: { requests: { 'sessions.get': state, 'config.get': config }, persisted: { plugin: { grouping: 'project' } } },
+  german: { requests: { 'sessions.get': state, 'config.get': { ...config, language: 'de' } } },
+  spanish: { requests: { 'sessions.get': state, 'config.get': { ...config, language: 'es' } } },
   empty: { requests: { 'sessions.get': { sessions: [], truncated: false, updatedAt: Date.now() }, 'config.get': config } }
 })

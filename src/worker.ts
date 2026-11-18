@@ -1,18 +1,39 @@
-// Worker: lists the Orca workspaces, reads the git state of each one (read-only, no network)
-// and answers the panel
-import type { OrcaWorkerApi } from 'orca/worker'
+// Worker: lists the Orca workspaces, reads the git state of each one (read-only, no network),
+// answers the panel, keeps the status bar item current and notifies when an agent leaves open work
+import type { OrcaWorkerApi, PluginEvents } from 'orca/worker'
 import { cleanPath, compareSessions, isSafePath, verdict as rate, verdictRank } from './git'
 import { mapLimit, MAX_PARALLEL, scanRepo, type RepoFailure, type RepoState } from './runner'
+import { errorKey, languageSetting, resolveLang, tr, type Lang } from './i18n'
+import { agentDoneText, clampBackground, statusBar, type BarItem } from './summary'
 import type { AgentState, Config, Session, SessionsState, Verdict } from './protocol'
 
 const MAX_WORKSPACES = 100
 const MAX_HIDDEN = 500
+// Agent panes and finished agents remembered at most (events name panes, not workspaces)
+const MAX_PANES = 500
 const LOCAL_HOST = 'local'
 const INTERVAL_MIN = 10
 const INTERVAL_MAX = 300
-/** Test hook: the pause between two scans that events asked for */
-export const TUNING = { eventGapMs: 2000 }
-const CONFIG_DEFAULTS: Config = { baseBranch: '', intervalSeconds: 30 }
+const STATUS_ITEM = 'sessions'
+/** Timings; tests shorten them */
+export const TUNING = {
+  /** Pause between two scans that events or the background timer asked for */
+  eventGapMs: 2000,
+  /** A workspace is not read again on account of events or the background timer within this time */
+  minRescanMs: 15_000,
+  /** First background scan after the start, so the status bar fills without the panel */
+  startDelayMs: 3000,
+  /** Length of one configured second (background refresh) */
+  secondMs: 1000,
+  /** At most one notification per worktree in this time */
+  notifyGapMs: 10 * 60_000
+}
+/** The system locale, the worker's last guess at the language when the panel never said one; tests replace it */
+export const LOCALE = { system: (): string => Intl.DateTimeFormat().resolvedOptions().locale }
+// Orca's UI locale as BCP-47 ("de-DE", "es-419")
+const LOCALE_PATTERN = /^[A-Za-z]{2,8}(?:[-_][A-Za-z0-9]{1,8}){0,6}$/
+const CONFIG_DEFAULTS: Config = { baseBranch: '', intervalSeconds: 30, notifyOnAgentDone: true, backgroundSeconds: 120, language: 'auto' }
+type EventState = PluginEvents['agent.status.changed']['state']
 
 type Row = {
   id: string
@@ -36,21 +57,42 @@ export default function activate(orca: OrcaWorkerApi): void {
   let statusTruncated = false
   let scannedOnce = false
   let currentId: string | null = null
-  let lastPanelSeen = 0
-  let intervalMs = CONFIG_DEFAULTS.intervalSeconds * 1000
   let stopped = false
   let lastSignature = ''
+  let lastBar = ''
   const checked = new Map<string, Checked>()
   // Hidden worktrees and the verdict they had when they were hidden
   const hidden = new Map<string, Verdict>()
-  // Which workspaces the next event-driven scan should read again (null = all)
-  let queued: Set<string> | 'all' | null = null
+  // What the next event-driven scan should read again: everything and/or single workspaces
+  let queuedAll = false
+  const queuedIds = new Set<string>()
   let draining = false
   let lastEventScan = 0
   let gapTimer: ReturnType<typeof setTimeout> | undefined
+  // The one background timer: first scan after the start, then every backgroundSeconds
+  let bgTimer: ReturnType<typeof setTimeout> | undefined
+  let backgroundSeconds = CONFIG_DEFAULTS.backgroundSeconds
   let inFlight: Promise<SessionsState> | null = null
   // A running targeted scan did not read every repository: a full refresh must not share it
   let inFlightTargeted = false
+  // Last agent state per pane, to see working -> done
+  const paneStates = new Map<string, EventState>()
+  // Workspaces whose agent finished, with the time: notified after a scan that started later
+  const finished = new Map<string, number>()
+  const notifiedAt = new Map<string, number>()
+  // Language: the setting and the UI locale the panel last told (the worker has no locale API)
+  let language = CONFIG_DEFAULTS.language
+  let uiLocale: string | null = null
+  const lang = (): Lang => {
+    if (uiLocale !== null) return resolveLang(language, uiLocale)
+    let system: unknown = null
+    try {
+      system = LOCALE.system()
+    } catch {
+      system = null
+    }
+    return resolveLang(language, system)
+  }
 
   async function getConfig(): Promise<Config> {
     const out = { ...CONFIG_DEFAULTS }
@@ -58,7 +100,13 @@ export default function activate(orca: OrcaWorkerApi): void {
     if (typeof base === 'string') out.baseBranch = base.trim()
     const sec = await orca.settings.get('intervalSeconds')
     if (typeof sec === 'number' && Number.isFinite(sec)) out.intervalSeconds = Math.min(INTERVAL_MAX, Math.max(INTERVAL_MIN, Math.round(sec)))
-    intervalMs = out.intervalSeconds * 1000
+    const notify = await orca.settings.get('notifyOnAgentDone')
+    if (typeof notify === 'boolean') out.notifyOnAgentDone = notify
+    const bg = clampBackground(await orca.settings.get('backgroundSeconds'))
+    if (bg !== null) out.backgroundSeconds = bg
+    out.language = languageSetting(await orca.settings.get('language'))
+    backgroundSeconds = out.backgroundSeconds
+    language = out.language
     return out
   }
 
@@ -83,7 +131,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     const failed = (error: string): Session => {
       // An agent at work is a reason to keep the session even when git could not be read
       const busy = agent === 'working' || agent === 'permission'
-      return { ...base, ...empty, verdict: busy ? 'keep' : 'unknown', reasons: busy ? ['agent working', error] : [error], error }
+      return { ...base, ...empty, verdict: busy ? 'keep' : 'unknown', reasons: busy ? ['agent working', error] : [error], error, errorCode: errorKey(error) }
     }
     if (r.kind !== 'worktree') return failed('folder workspace, not checked')
     if (!isLocalWorktree(r)) return failed(r.hostId === null || r.hostId === LOCAL_HOST ? 'invalid path' : 'remote workspace, not checked')
@@ -119,7 +167,8 @@ export default function activate(orca: OrcaWorkerApi): void {
       dirtySince: s.dirtySince,
       verdict: v.verdict,
       reasons: v.reasons,
-      error: null
+      error: null,
+      errorCode: null
     }
   }
 
@@ -137,12 +186,61 @@ export default function activate(orca: OrcaWorkerApi): void {
       lastSignature = signature
       orca.panels.post('sessions.changed', state)
     }
+    if (scannedOnce) updateBar(state.sessions)
     return state
+  }
+
+  /** Status bar: the same sessions and verdicts as the panel, local worktrees only (folders and remote ones are never checked) */
+  function updateBar(sessions: readonly Session[]): void {
+    const local = new Set(rows.filter((r) => r.kind === 'worktree' && (r.hostId === null || r.hostId === LOCAL_HOST)).map((r) => r.id))
+    const items: BarItem[] = sessions
+      .filter((s) => local.has(s.id))
+      .map((s) => ({ project: s.project, name: s.name, hidden: s.hidden, unknown: s.error !== null, uncommitted: s.uncommitted }))
+    setBar(statusBar(items, lang()))
+  }
+  function setBar(bar: { text: string; tone: 'neutral' | 'success' | 'warning'; tooltip: string }): void {
+    const signature = JSON.stringify(bar)
+    if (stopped || signature === lastBar) return
+    lastBar = signature
+    void orca.host.call('statusBar.update', { id: STATUS_ITEM, ...bar }).catch((e) => {
+      lastBar = ''
+      orca.log(`status bar failed: ${String(e)}`)
+    })
+  }
+
+  /** Notifies for the workspaces whose agent finished before this scan read them again */
+  async function notifyFinished(cfg: Config): Promise<void> {
+    const now = Date.now()
+    for (const [id, at] of [...finished]) {
+      const row = rows.find((r) => r.id === id)
+      if (!row || !isLocalWorktree(row)) {
+        // Not in the list (any more) or never read: nothing to tell
+        if (row || !truncated) finished.delete(id)
+        continue
+      }
+      const c = checked.get(id)
+      if (!c || c.at < at) {
+        // Read a moment before the agent finished: read it again once it is due
+        enqueue(id)
+        continue
+      }
+      finished.delete(id)
+      if (!cfg.notifyOnAgentDone || hidden.has(id)) continue
+      const last = notifiedAt.get(id)
+      if (last !== undefined && now - last < TUNING.notifyGapMs) continue
+      const s = sessionOf(row)
+      if (s.error !== null) continue
+      const body = agentDoneText(s, lang())
+      if (!body) continue // clean worktree
+      notifiedAt.set(id, now)
+      for (const [k, t] of notifiedAt) if (now - t >= TUNING.notifyGapMs) notifiedAt.delete(k)
+      await orca.host.call('notifications.show', { title: 'Session Check', body }).catch((e) => orca.log(`notify failed: ${String(e)}`))
+    }
   }
 
   async function loadRows(): Promise<void> {
     const res = await orca.host.call('workspace.list', { includeStatus: true }).catch(() => null)
-    if (!res) throw new Error('Could not list the workspaces')
+    if (!res) throw new Error(tr('en', 'err.listFailed'))
     rows = res.workspaces.slice(0, MAX_WORKSPACES) as Row[]
     truncated = res.truncated || res.workspaces.length > MAX_WORKSPACES
     statusTruncated = res.statusTruncated === true
@@ -164,64 +262,118 @@ export default function activate(orca: OrcaWorkerApi): void {
     if (changed) await saveHidden()
   }
 
-  /** One scan at a time. `only` limits the git reads to those workspaces (the others keep their last result). */
-  async function scan(only?: ReadonlySet<string>): Promise<SessionsState> {
-    // A panel refresh shares the running scan. A targeted scan waits for it and then runs, so its workspaces are not lost.
+  /**
+   * One scan at a time. `only` limits the git reads to those workspaces (the others keep their last result).
+   * `minAgeMs` skips workspaces read more recently than that (event and background scans), new ones are always read.
+   */
+  async function scan(only?: ReadonlySet<string>, minAgeMs = 0): Promise<SessionsState> {
+    const partial = only !== undefined || minAgeMs > 0
+    // A panel refresh shares the running scan. A partial scan waits for it and then runs, so its workspaces are not lost.
     while (inFlight) {
-      if (!only && !inFlightTargeted) return inFlight
+      if (!partial && !inFlightTargeted) return inFlight
       await inFlight.catch(() => undefined)
     }
     const run = (async () => {
       try {
-        await loadRows()
+        try {
+          await loadRows()
+        } catch (e) {
+          if (!scannedOnce) setBar({ text: tr(lang(), 'bar.unknownAll'), tone: 'neutral', tooltip: tr(lang(), 'bar.tip.listFailed') })
+          throw e
+        }
         const cfg = await getConfig()
-        const todo = rows.filter((r) => isLocalWorktree(r) && (!only || only.has(r.id) || !checked.has(r.id)))
+        const now = Date.now()
+        const due = (r: Row) => {
+          const c = checked.get(r.id)
+          return !c || ((!only || only.has(r.id)) && now - c.at >= minAgeMs)
+        }
+        const todo = rows.filter((r) => isLocalWorktree(r) && due(r))
         await mapLimit(todo, MAX_PARALLEL, async (r) => {
           if (stopped) return
           checked.set(r.id, { at: Date.now(), result: await scanRepo(r.path, cfg.baseBranch) })
         })
         scannedOnce = true
         await resurface()
-        return publish()
+        const state = publish()
+        await notifyFinished(cfg)
+        return state
       } finally {
         inFlight = null
       }
     })()
     inFlight = run
-    inFlightTargeted = only !== undefined
+    inFlightTargeted = partial
     return await run
   }
 
-  /** Event-driven rescans: coalesced, one after the other */
+  /** Event and background rescans: coalesced, one after the other, `null` = every workspace */
   function enqueue(id: string | null): void {
     if (stopped) return
-    if (id === null || queued === 'all') queued = 'all'
-    else {
-      const set = queued ?? new Set<string>()
-      set.add(id)
-      queued = set
-    }
+    if (id === null) queuedAll = true
+    else queuedIds.add(id)
     if (!draining) void drain()
   }
+  const pause = (ms: number) => new Promise<void>((resolve) => (gapTimer = setTimeout(resolve, ms)))
   async function drain(): Promise<void> {
     draining = true
     try {
-      while (queued && !stopped) {
+      while ((queuedAll || queuedIds.size > 0) && !stopped) {
         // Events can come in storms (every agent step): scans they ask for keep a distance
         const wait = lastEventScan + TUNING.eventGapMs - Date.now()
-        if (wait > 0) await new Promise<void>((resolve) => (gapTimer = setTimeout(resolve, wait)))
+        if (wait > 0) await pause(wait)
         if (stopped) break
-        const q = queued
-        queued = null
-        lastEventScan = Date.now()
-        // Targeted scans of "all" (id unknown) ask for everything
-        await scan(q === 'all' ? undefined : q).catch((e) => orca.log(`rescan failed: ${String(e)}`))
+        // A workspace read a moment ago waits for its turn instead of being read again
+        const now = Date.now()
+        const due = new Set<string>()
+        let next = Infinity
+        for (const id of queuedIds) {
+          const c = checked.get(id)
+          const at = c ? c.at + TUNING.minRescanMs : 0
+          if (at <= now) due.add(id)
+          else next = Math.min(next, at)
+        }
+        for (const id of due) queuedIds.delete(id)
+        const all = queuedAll
+        queuedAll = false
+        if (!all && due.size === 0) {
+          await pause(next - now)
+          continue
+        }
+        lastEventScan = now
+        // "all" reads every workspace that is due, the queued ones included
+        await scan(all ? undefined : due, TUNING.minRescanMs).catch((e) => orca.log(`rescan failed: ${String(e)}`))
       }
     } finally {
       draining = false
     }
   }
-  const panelOpen = () => Date.now() - lastPanelSeen < Math.max(intervalMs * 3, 90_000)
+
+  /** The one background timer; it only queues a scan, so it never runs next to another one */
+  function armBackground(delayMs: number): void {
+    if (bgTimer) clearTimeout(bgTimer)
+    bgTimer = undefined
+    if (stopped) return
+    bgTimer = setTimeout(() => {
+      bgTimer = undefined
+      if (stopped) return
+      // A scan that is queued or running already brings the status bar up to date
+      if (!draining && !inFlight) enqueue(null)
+      if (backgroundSeconds > 0) armBackground(backgroundSeconds * TUNING.secondMs)
+    }, delayMs)
+  }
+  function rearmBackground(): void {
+    if (stopped) return
+    if (backgroundSeconds > 0) armBackground(backgroundSeconds * TUNING.secondMs)
+    else if (bgTimer) {
+      clearTimeout(bgTimer)
+      bgTimer = undefined
+    }
+  }
+
+  /** The status bar in the language that holds now (it only goes out when its text changed) */
+  function relabel(): void {
+    if (scannedOnce && !stopped) updateBar(snapshot().sessions)
+  }
 
   type FocusContext = { workspaceId?: string; branch: string; displayName: string } | null
   function resolveCurrent(ctx: FocusContext): void {
@@ -242,7 +394,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   }
 
   const known = (id: unknown): string => {
-    if (typeof id !== 'string' || !rows.some((r) => r.id === id)) throw new Error('Unknown workspace')
+    if (typeof id !== 'string' || !rows.some((r) => r.id === id)) throw new Error(tr('en', 'err.unknownWorkspace'))
     return id
   }
 
@@ -255,32 +407,32 @@ export default function activate(orca: OrcaWorkerApi): void {
       for (const [id, v] of Object.entries(saved)) if (v === 'safe' || v === 'check' || v === 'unknown' || v === 'keep') hidden.set(id, v)
     }
     await getConfig().catch(() => CONFIG_DEFAULTS)
+    // The status bar fills shortly after the start, also when the panel is never opened
+    if (!stopped) armBackground(TUNING.startDelayMs)
   })()
 
   orca.panels.handle('sessions.get', async () => {
     await ready
-    lastPanelSeen = Date.now()
     return scannedOnce ? snapshot() : scan()
   })
   orca.panels.handle('sessions.refresh', async () => {
     await ready
-    lastPanelSeen = Date.now()
     return scan()
   })
   orca.panels.handle('session.open', async (input) => {
     const id = known(input?.id)
     await orca.host.call('workspace.open', { workspaceId: id }).catch(() => {
-      throw new Error('Could not open the workspace')
+      throw new Error(tr('en', 'err.openFailed'))
     })
     return { ok: true as const }
   })
   orca.panels.handle('session.hide', async (input) => {
     const id = known(input?.id)
-    if (typeof input.hidden !== 'boolean') throw new Error('Invalid request')
+    if (typeof input.hidden !== 'boolean') throw new Error(tr('en', 'err.invalidRequest'))
     if (input.hidden) {
       const row = rows.find((r) => r.id === id)
       const verdict = row ? sessionOf(row).verdict : 'unknown'
-      if (verdict === 'keep') throw new Error('This worktree still has open work and cannot be hidden')
+      if (verdict === 'keep') throw new Error(tr('en', 'err.cannotHide'))
       hidden.set(id, verdict)
     } else hidden.delete(id)
     await saveHidden()
@@ -295,7 +447,35 @@ export default function activate(orca: OrcaWorkerApi): void {
     if (typeof input?.intervalSeconds === 'number' && Number.isFinite(input.intervalSeconds)) {
       await orca.settings.set('intervalSeconds', Math.min(INTERVAL_MAX, Math.max(INTERVAL_MIN, Math.round(input.intervalSeconds))))
     }
-    return getConfig()
+    if (typeof input?.notifyOnAgentDone === 'boolean') await orca.settings.set('notifyOnAgentDone', input.notifyOnAgentDone)
+    const bg = clampBackground(input?.backgroundSeconds)
+    if (bg !== null) await orca.settings.set('backgroundSeconds', bg)
+    // Only a known value is stored; anything else leaves the setting as it is
+    if (typeof input?.language === 'string' && languageSetting(input.language) === input.language) await orca.settings.set('language', input.language)
+    const before = backgroundSeconds
+    const cfg = await getConfig()
+    if (cfg.backgroundSeconds !== before) rearmBackground()
+    relabel()
+    return cfg
+  })
+  orca.panels.handle('ui.locale', async (input) => {
+    const locale = input?.locale
+    if (typeof locale !== 'string' || locale.length > 64 || !LOCALE_PATTERN.test(locale)) throw new Error(tr('en', 'err.invalidRequest'))
+    await ready
+    uiLocale = locale
+    relabel()
+    return { ok: true as const }
+  })
+  // A change in Orca's Settings takes effect without a restart
+  const settingsWatch = orca.settings.onDidChange((change) => {
+    if (change.key !== 'backgroundSeconds' && change.key !== 'language') return
+    const before = backgroundSeconds
+    void getConfig()
+      .then((cfg) => {
+        if (cfg.backgroundSeconds !== before) rearmBackground()
+        relabel()
+      })
+      .catch(() => undefined)
   })
 
   orca.events.on('workspace.changed', async (e) => {
@@ -303,29 +483,42 @@ export default function activate(orca: OrcaWorkerApi): void {
     resolveCurrent(e.context)
     publish()
   })
-  orca.events.on('workspace.created', () => {
-    if (panelOpen()) enqueue(null)
+  orca.events.on('workspace.created', (e) => {
+    enqueue(e.workspaceListId ?? null)
   })
   orca.events.on('workspace.removed', () => {
-    if (panelOpen()) enqueue(null)
+    enqueue(null)
   })
   orca.events.on('agent.status.changed', (e) => {
-    if (!panelOpen()) return
     // workspaceListId is the id workspace.list uses; without it, read everything again
     const id = e.workspaceListId ?? e.workspaceId
+    const before = paneStates.get(e.paneKey)
+    paneStates.delete(e.paneKey)
+    paneStates.set(e.paneKey, e.state)
+    if (paneStates.size > MAX_PANES) paneStates.delete(paneStates.keys().next().value as string)
+    // Finished: the agent worked or asked for permission and is done now
+    if (id && e.state === 'done' && (before === 'working' || before === 'blocked')) {
+      finished.delete(id)
+      finished.set(id, Date.now())
+      if (finished.size > MAX_PANES) finished.delete(finished.keys().next().value as string)
+    }
     enqueue(id && rows.some((r) => r.id === id) ? id : null)
   })
 
   orca.commands.register('refresh', async () => {
     await ready
     const s = await scan()
-    return `${s.sessions.length} worktrees`
+    return tr(lang(), 'command.refreshed', { n: s.sessions.length })
   })
 
   cleanup = () => {
     stopped = true
-    queued = null
+    queuedAll = false
+    queuedIds.clear()
     if (gapTimer) clearTimeout(gapTimer)
+    if (bgTimer) clearTimeout(bgTimer)
+    bgTimer = undefined
+    settingsWatch.dispose()
   }
 }
 

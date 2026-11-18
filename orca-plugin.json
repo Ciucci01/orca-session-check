@@ -2,8 +2,8 @@
   "manifestVersion": 2,
   "id": "session-check",
   "name": "Session Check",
-  "version": "1.0.2",
-  "description": "See at a glance which of your Orca worktrees still have uncommitted files, unpushed commits, stashes or a running agent, and which sessions are safe to close. Read-only, no network.",
+  "version": "1.1.0",
+  "description": "See at a glance which of your Orca worktrees still have uncommitted files, unpushed commits, stashes or a running agent, and which sessions are safe to close. Status bar count and a notification when an agent leaves open work. Read-only, no network.",
   "engines": {
     "orca": ">=1.4.259"
   },
@@ -26,6 +26,16 @@
         "title": "Session Check: Rescan worktrees"
       }
     ],
+    "statusBarItems": [
+      {
+        "id": "sessions",
+        "text": "Sessions",
+        "icon": "layers",
+        "tone": "neutral",
+        "tooltip": "Session Check: worktrees with uncommitted files",
+        "command": "refresh"
+      }
+    ],
     "settings": [
       {
         "key": "baseBranch",
@@ -41,6 +51,39 @@
         "description": "How often the open panel rescans, 10 to 300.",
         "type": "number",
         "default": 30
+      },
+      {
+        "key": "backgroundSeconds",
+        "title": "Background refresh (seconds)",
+        "description": "How often the status bar count is refreshed without the panel, 30 to 600. 0 turns it off (agent and workspace events still update it).",
+        "type": "number",
+        "default": 120
+      },
+      {
+        "key": "notifyOnAgentDone",
+        "title": "Notify when an agent finishes",
+        "description": "Desktop notification when an agent in a worktree finishes and the worktree still has uncommitted files, new files or unpushed commits. At most one per worktree every 10 minutes.",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "language",
+        "title": "Language",
+        "description": "Language of the panel, the status bar and the notification. Automatic follows Orca's language and falls back to English.",
+        "type": "string",
+        "default": "auto",
+        "enum": [
+          "auto",
+          "en",
+          "de",
+          "es"
+        ],
+        "enumLabels": [
+          "Automatic",
+          "English",
+          "Deutsch",
+          "Español"
+        ]
       }
     ],
     "events": [
@@ -73,6 +116,9 @@
     },
     {
       "kind": "settings:own"
+    },
+    {
+      "kind": "notifications:show"
     }
   ],
   "cover": {
@@ -86,6 +132,11 @@
       "caption": "Which worktrees still have open work"
     },
     {
+      "path": "assets/screenshot-alerts.png",
+      "alt": "A status bar item reading Sessions 3 open with a tooltip listing the worktrees, and a desktop notification that an agent finished and left uncommitted files",
+      "caption": "See it without opening the panel"
+    },
+    {
       "path": "assets/screenshot-details.png",
       "alt": "One worktree card opened: chips, lines changed, the changed files in plain words and the unpushed commits",
       "caption": "Open a card, see what is inside"
@@ -96,14 +147,9 @@
       "caption": "Know what you can close"
     },
     {
-      "path": "assets/screenshot-projects.png",
-      "alt": "The same list grouped by project",
-      "caption": "Group by project"
-    },
-    {
-      "path": "assets/screenshot-light.png",
-      "alt": "The panel in Orca's light theme",
-      "caption": "Works in the light theme"
+      "path": "assets/screenshot-languages.png",
+      "alt": "The same panel in English, German and Spanish",
+      "caption": "English, Deutsch, Español"
     },
     {
       "path": "assets/screenshot-access.png",

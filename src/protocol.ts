@@ -1,5 +1,5 @@
 // Panel <-> worker contract, declared once
-export {}
+import type { LanguageSetting, MsgKey } from './i18n'
 
 /** keep = do not close, check = look first, safe = can be closed, unknown = could not be checked */
 export type Verdict = 'safe' | 'check' | 'keep' | 'unknown'
@@ -50,8 +50,10 @@ export type Session = {
   files: FileEntry[]
   /** More changed files than listed */
   moreFiles: number
-  /** Why the worktree could not be checked (verdict unknown) */
+  /** Why the worktree could not be checked (verdict unknown), in English */
   error: string | null
+  /** The same as a message code the panel translates; null when the text is not a known one */
+  errorCode: MsgKey | null
   /** Subjects of the first unpushed commits (at most 3), plain text */
   unpushed: string[]
   /** Lines added and removed in tracked files compared with HEAD, null when unknown */
@@ -76,8 +78,14 @@ export type SessionsState = {
 export type Config = {
   /** Base branch override, empty = detect */
   baseBranch: string
-  /** Rescan interval of the open panel in seconds */
+  /** Rescan interval of the open panel in seconds, 10 to 300 */
   intervalSeconds: number
+  /** Desktop notification when an agent finishes and leaves open work */
+  notifyOnAgentDone: boolean
+  /** Background rescan for the status bar in seconds, 0 = off, else 30 to 600 */
+  backgroundSeconds: number
+  /** Language of the panel, the status bar and the notification; auto = Orca's language */
+  language: LanguageSetting
 }
 
 declare module 'orca' {
@@ -89,6 +97,8 @@ declare module 'orca' {
     'session.hide': { input: { id: string; hidden: boolean }; output: SessionsState }
     'config.get': { output: Config }
     'config.set': { input: Partial<Config>; output: Config }
+    /** The panel tells the worker Orca's UI language (BCP-47), the worker has no API for it */
+    'ui.locale': { input: { locale: string }; output: { ok: true } }
   }
   interface PluginPanelEvents {
     'sessions.changed': SessionsState

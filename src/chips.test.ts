@@ -5,7 +5,7 @@ import type { Session } from './protocol'
 const base: Session = {
   id: 'w', name: 'acme', project: 'acme-shop', branch: 'main', current: false, hidden: false, verdict: 'safe', reasons: [],
   uncommitted: 0, staged: 0, untracked: 0, conflicts: 0, ahead: 0, behind: 0, upstream: 'origin/main', upstreamGone: false, submodules: false, stash: 0, stashTotal: 0,
-  merged: null, operation: null, agent: null, files: [], moreFiles: 0, error: null, lastCommitAt: null, lastActiveAt: null, unpushed: [], added: null, removed: null, dirtySince: null, checkedAt: 1
+  merged: null, operation: null, agent: null, files: [], moreFiles: 0, error: null, errorCode: null, lastCommitAt: null, lastActiveAt: null, unpushed: [], added: null, removed: null, dirtySince: null, checkedAt: 1
 }
 const texts = (s: Partial<Session>) => chips({ ...base, ...s }).map((c) => `${c.tone}:${c.text}`)
 

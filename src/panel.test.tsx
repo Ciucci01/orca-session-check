@@ -1,6 +1,6 @@
 import { assert, mockHost, mount, test } from 'orca/testing'
 import * as panel from './panel'
-import type { Session, SessionsState } from './protocol'
+import type { Config, Session, SessionsState } from './protocol'
 
 // Unmount even when an assertion fails: the panel's refresh timer would keep node alive
 const views: { unmount(): Promise<void> }[] = []
@@ -19,11 +19,11 @@ function t(name: string, fn: () => Promise<void>): void {
   })
 }
 
-const cfg = { baseBranch: '', intervalSeconds: 30 }
+const cfg: Config = { baseBranch: '', intervalSeconds: 30, notifyOnAgentDone: true, backgroundSeconds: 120, language: 'auto' }
 const base: Session = {
   id: '', name: '', project: 'acme-shop', branch: 'main', current: false, hidden: false, verdict: 'safe', reasons: ['clean, nothing unpushed'],
   uncommitted: 0, staged: 0, untracked: 0, conflicts: 0, ahead: 0, behind: 0, upstream: 'origin/main', upstreamGone: false, submodules: false, stash: 0, stashTotal: 0,
-  merged: null, operation: null, agent: null, files: [], moreFiles: 0, error: null, lastCommitAt: null, lastActiveAt: null, unpushed: [], added: null, removed: null, dirtySince: null, checkedAt: 1
+  merged: null, operation: null, agent: null, files: [], moreFiles: 0, error: null, errorCode: null, lastCommitAt: null, lastActiveAt: null, unpushed: [], added: null, removed: null, dirtySince: null, checkedAt: 1
 }
 const dirty: Session = {
   ...base, id: 'w1', name: 'checkout', verdict: 'keep', reasons: ['3 uncommitted', '2 unpushed'], uncommitted: 3, ahead: 2,
@@ -234,4 +234,151 @@ t('the current session is pinned on top, also with a filter and a search', async
   // one card only: it is not repeated in its group
   assert.equal(view.findAll({ text: 'acme-shop / mine' }).length, 1)
   await view.unmount()
+})
+
+t('the settings show the background refresh and the notification switch and save them', async () => {
+  const sent: unknown[] = []
+  const host = mockHost({
+    requests: {
+      'sessions.get': state([safe]),
+      'sessions.refresh': state([safe]),
+      'config.get': cfg,
+      'config.set': (input) => {
+        sent.push(input)
+        return { ...cfg, ...input }
+      }
+    }
+  })
+  const view = await open(host)
+  await view.toggle({ type: 'Collapsible', label: 'Settings' })
+  const select = view.find({ type: 'Select', label: 'Status bar refresh in the background' })
+  assert.ok(select)
+  assert.equal(view.valueOf(select), '120')
+  await view.select(select, '0')
+  const sw = view.find({ type: 'Switch', label: 'Notify when an agent finishes and leaves open work' })
+  assert.ok(sw)
+  assert.equal(view.valueOf(sw), true)
+  await view.toggle(sw)
+  assert.deepEqual(sent, [{ backgroundSeconds: 0 }, { notifyOnAgentDone: false }])
+  assert.equal(view.valueOf({ type: 'Switch', label: 'Notify when an agent finishes and leaves open work' }), false)
+  await view.unmount()
+})
+
+// Languages: the setting wins, auto follows Orca's language (env.locale)
+
+const many: Session[] = [
+  { ...dirty, files: [{ state: '.M', path: 'src/cart.tsx' }, { state: '??', path: 'src/hero.tsx' }], moreFiles: 0, untracked: 1, conflicts: 1 },
+  { ...safe, id: 'w3', name: 'gone', verdict: 'unknown', error: 'folder not found', errorCode: 'err.folderNotFound', upstream: null },
+  { ...safe, id: 'w4', name: 'mine', current: true }
+]
+async function openIn(language: Config['language'], locale?: string, extra: Record<string, unknown> = {}) {
+  const host = mockHost({ requests: { 'sessions.get': state(many), 'sessions.refresh': state(many), 'config.get': { ...cfg, language }, 'ui.locale': { ok: true }, ...extra } })
+  const v = await mount(panel, { host, ...(locale ? { locale } : {}) })
+  views.push(v)
+  return v
+}
+
+async function assertGerman(v: Awaited<ReturnType<typeof openIn>>) {
+  assert.ok(v.find({ text: '1 Worktree mit nicht committeten Dateien' }))
+  assert.ok(v.find({ text: 'Aktuelle Session' }))
+  assert.ok(v.find({ text: 'Nicht committete Dateien' }))
+  assert.ok(v.find({ text: 'Alle 3' }) && v.find({ text: 'Nicht committet 1' }) && v.find({ text: 'Schließbar 1' }))
+  assert.ok(v.find({ text: '3 geändert' }) && v.find({ text: '2 ungepusht' }) && v.find({ text: '1 Konflikt' }) && v.find({ text: '1 nicht versioniert' }))
+  assert.ok(v.find({ text: 'sauber' }))
+  assert.ok(v.findAll({ text: 'Öffnen' }).length >= 1 && v.findAll({ text: 'Ausblenden' }).length >= 1)
+  assert.ok(v.find({ text: 'Gruppieren nach' }) && v.find({ text: 'Projekt' }))
+  assert.ok(v.find({ label: 'Worktrees suchen' }))
+}
+
+t('the language setting de draws the panel in German, chips and settings included', async () => {
+  const v = await openIn('de', 'en-US')
+  await assertGerman(v)
+  // the group that is folded away, with the translated error chip
+  await v.toggle({ type: 'Collapsible', label: 'Nicht geprüft' })
+  assert.ok(v.find({ text: 'Ordner nicht gefunden' }))
+  await v.toggle({ label: /Dateien \(2\)/ })
+  assert.ok(v.find({ text: 'geändert: src/cart.tsx' }) && v.find({ text: 'neu: src/hero.tsx' }))
+  await v.toggle({ type: 'Collapsible', label: 'Einstellungen' })
+  const lang = v.find({ type: 'Select', label: 'Sprache' })
+  assert.ok(lang)
+  assert.equal(v.valueOf(lang), 'de')
+  const options = lang.props.options as { value: string; label: string }[]
+  assert.deepEqual(options.map((o) => o.label), ['Automatisch', 'English', 'Deutsch', 'Español'])
+  assert.ok(v.find({ type: 'Select', label: 'Aktualisieren, solange das Panel offen ist' }))
+  assert.ok(v.find({ type: 'Switch', label: 'Benachrichtigen, wenn ein Agent fertig ist und offene Arbeit hinterlässt' }))
+  assert.equal(v.find({ text: 'Current session' }), null)
+  assert.deepEqual(v.errors, [])
+})
+
+t('the language setting es draws the panel in Spanish', async () => {
+  const v = await openIn('es', 'de-DE')
+  assert.ok(v.find({ text: '1 worktree con archivos sin confirmar' }))
+  assert.ok(v.find({ text: 'Sesión actual' }))
+  assert.ok(v.find({ text: 'Archivos sin confirmar' }))
+  assert.ok(v.find({ text: 'Todos 3' }) && v.find({ text: 'Sin confirmar 1' }))
+  assert.ok(v.find({ text: '3 cambiados' }) && v.find({ text: '2 sin push' }) && v.find({ text: '1 conflicto' }) && v.find({ text: 'limpio' }))
+  assert.ok(v.findAll({ text: 'Abrir' }).length >= 1 && v.findAll({ text: 'Ocultar' }).length >= 1)
+  await v.toggle({ type: 'Collapsible', label: 'Sin revisar' })
+  assert.ok(v.find({ text: 'carpeta no encontrada' }))
+  await v.toggle({ type: 'Collapsible', label: 'Ajustes' })
+  const lang = v.find({ type: 'Select', label: 'Idioma' })
+  assert.ok(lang)
+  assert.deepEqual((lang.props.options as { label: string }[]).map((o) => o.label), ['Automático', 'English', 'Deutsch', 'Español'])
+  assert.ok(v.find({ type: 'Select', label: 'Actualizar la barra de estado en segundo plano' }))
+})
+
+t('auto follows Orca\'s locale: de-DE is German, es-MX Spanish, fr English', async () => {
+  await assertGerman(await openIn('auto', 'de-DE'))
+  const es = await openIn('auto', 'es-MX')
+  assert.ok(es.find({ text: 'Sesión actual' }))
+  const fr = await openIn('auto', 'fr-FR')
+  assert.ok(fr.find({ text: 'Current session' }))
+  assert.ok(fr.find({ text: '3 changed' }))
+})
+
+t('the panel tells the worker Orca\'s locale at the start', async () => {
+  const sent: string[] = []
+  await openIn('auto', 'es-MX', { 'ui.locale': (input: { locale: string }) => { sent.push(input.locale); return { ok: true } } })
+  assert.deepEqual(sent, ['es-MX'])
+})
+
+t('choosing a language in the settings saves it and redraws the panel', async () => {
+  const sent: unknown[] = []
+  const host = mockHost({
+    requests: {
+      'sessions.get': state(many),
+      'sessions.refresh': state(many),
+      'config.get': cfg,
+      'config.set': (input) => {
+        sent.push(input)
+        return { ...cfg, ...input }
+      }
+    }
+  })
+  const v = await mount(panel, { host, locale: 'en-US' })
+  views.push(v)
+  await v.toggle({ type: 'Collapsible', label: 'Settings' })
+  const lang = v.find({ type: 'Select', label: 'Language' })
+  assert.ok(lang)
+  assert.equal(v.valueOf(lang), 'auto')
+  assert.deepEqual((lang.props.options as { label: string }[]).map((o) => o.label), ['Automatic', 'English', 'Deutsch', 'Español'])
+  await v.select(lang, 'es')
+  assert.deepEqual(sent, [{ language: 'es' }])
+  assert.ok(v.find({ text: 'Sesión actual' }))
+  assert.ok(v.find({ type: 'Select', label: 'Idioma' }))
+})
+
+t('worker errors are shown in the panel language, unknown texts as they are', async () => {
+  const v = await openIn('de', 'en-US', {
+    'session.hide': () => {
+      throw new Error('This worktree still has open work and cannot be hidden')
+    },
+    'session.open': () => {
+      throw new Error('odd <b>text</b>')
+    }
+  })
+  await v.press(v.findAll({ text: 'Ausblenden' })[0])
+  assert.ok(v.find({ text: 'Dieser Worktree hat noch offene Arbeit und lässt sich nicht ausblenden' }))
+  await v.press(v.findAll({ text: 'Öffnen' })[0])
+  assert.ok(v.find({ text: 'odd <b>text</b>' }))
 })
