@@ -22,6 +22,8 @@ import {
 
 export const GIT_TIMEOUT_MS = 8000
 export const GIT_MAX_BUFFER = 2 * 1024 * 1024
+/** The list of all tracked files (for gitlinks) can be long in a big repository: up to about 700k files */
+const LIST_MAX_BUFFER = 64 * 1024 * 1024
 export const MAX_PARALLEL = 4
 
 export type GitResult = { code: number; stdout: string }
@@ -53,13 +55,13 @@ export function gitEnv(source: Record<string, string | undefined> = process.env)
 }
 
 /** Runs git with the fixed flags. Exit codes other than 0 come back, they are not errors (merge-base uses them). */
-export function runGit(path: string, overrides: readonly string[], sub: readonly string[], timeoutMs = GIT_TIMEOUT_MS): Promise<GitResult> {
+export function runGit(path: string, overrides: readonly string[], sub: readonly string[], timeoutMs = GIT_TIMEOUT_MS, maxBuffer = GIT_MAX_BUFFER): Promise<GitResult> {
   return new Promise((resolve, reject) => {
     if (!isSafePath(path)) return reject(new GitError('failed', 'invalid path'))
     execFile(
       'git',
       gitArgs(path, overrides, sub),
-      { env: gitEnv(), timeout: timeoutMs, maxBuffer: GIT_MAX_BUFFER, encoding: 'utf8', windowsHide: true },
+      { env: gitEnv(), timeout: timeoutMs, maxBuffer, encoding: 'utf8', windowsHide: true },
       (err: Error | null, stdout: string) => {
         if (!err) return resolve({ code: 0, stdout })
         const e = err as Error & { killed?: boolean; code?: number | string }
@@ -176,13 +178,13 @@ export async function scanRepo(path: string, baseSetting: string): Promise<RepoS
   }
 }
 
-/** A submodule is a gitlink (mode 160000) in the index or a .gitmodules file; a repository too big to list counts as having one */
+/** A submodule is a gitlink (mode 160000) in the index or a .gitmodules file; a list that is still too big counts as having one */
 async function hasSubmodules(path: string, o: readonly string[]): Promise<boolean> {
   const top = (await runGit(path, o, ['rev-parse', '--show-toplevel'])).stdout.trim()
   const root = top.startsWith('/') ? top : path
   if (await stat(join(root, '.gitmodules')).then(() => true, () => false)) return true
   try {
-    const files = await runGit(path, o, ['ls-files', '--stage', '-z'])
+    const files = await runGit(path, o, ['ls-files', '--stage', '-z'], GIT_TIMEOUT_MS, LIST_MAX_BUFFER)
     if (files.code !== 0) return true
     return files.stdout.split('\0').some((entry) => entry.startsWith('160000 '))
   } catch (e) {

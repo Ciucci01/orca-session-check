@@ -658,3 +658,13 @@ t('a detached HEAD whose commits no base branch holds is a worktree to keep', as
   assert.equal(s.detached, true)
   assert.equal(s.merged, false)
 })
+
+t('a long output is allowed where asked for, and cut where not', async () => {
+  const dir = await repo()
+  for (let i = 0; i < 400; i++) await writeFile(join(dir, `f${i}-${'x'.repeat(40)}.txt`), 'x\n')
+  git(dir, 'add', '.')
+  await assert.rejects(() => runGit(dir, [], ['ls-files', '--stage', '-z'], 8000, 1000), (e: unknown) => e instanceof GitError && e.reason === 'too-large')
+  const all = await runGit(dir, [], ['ls-files', '--stage', '-z'], 8000, 1024 * 1024)
+  assert.ok(all.stdout.split('\0').length > 400)
+  assert.equal(ok(await scanRepo(dir, '')).submodules, false)
+})

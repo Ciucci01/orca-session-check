@@ -87,7 +87,7 @@ Orca labels every plugin with a worker "Full access". Here is what this one does
 - Unpushed and behind counts use the **last known** upstream. Nothing is fetched, so run `git fetch` yourself for fresh numbers.
 - "Already in the base branch" compares with the remote-tracking branch `origin/HEAD` (or `origin/main`, `origin/master`, or the base branch you set). A local branch never counts as the base.
 - Git shares one stash between all worktrees, so stash entries are counted per branch.
-- Filters such as Git LFS are not run, so LFS files can show up as modified when only their time stamp changed.
+- Filters such as Git LFS are not run, and the `.gitattributes` of the worktree is ignored (a repository must not be able to start a program through it). So LFS files and files with an `eol` attribute can show up as modified when only their time stamp changed. That is the stricter side.
 - Workspaces on other hosts (SSH) and partial clones are listed as "not checked".
 
 <details>
