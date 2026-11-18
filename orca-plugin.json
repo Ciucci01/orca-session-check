@@ -1,0 +1,99 @@
+{
+  "manifestVersion": 2,
+  "id": "session-check",
+  "name": "Session Check",
+  "version": "1.0.0",
+  "description": "See at a glance which of your Orca worktrees still have uncommitted files, unpushed commits, stashes or a running agent, and which sessions are safe to close. Read-only, no network.",
+  "engines": {
+    "orca": ">=1.4.259"
+  },
+  "execution": "trusted-worker",
+  "pluginApi": 1,
+  "main": "src/worker.ts",
+  "contributes": {
+    "panels": [
+      {
+        "id": "session-check",
+        "title": "Session Check",
+        "icon": "layers",
+        "entry": "src/panel.tsx",
+        "ui": "components"
+      }
+    ],
+    "commands": [
+      {
+        "id": "refresh",
+        "title": "Session Check: Rescan worktrees"
+      }
+    ],
+    "settings": [
+      {
+        "key": "baseBranch",
+        "title": "Base branch",
+        "description": "Branch that counts as \"already merged\", for example origin/main. Leave empty to detect it from origin/HEAD.",
+        "type": "string",
+        "default": "",
+        "placeholder": "origin/main"
+      },
+      {
+        "key": "intervalSeconds",
+        "title": "Refresh interval (seconds)",
+        "description": "How often the open panel rescans, 10 to 300.",
+        "type": "number",
+        "default": 30
+      }
+    ],
+    "events": [
+      {
+        "on": "workspace.changed"
+      },
+      {
+        "on": "workspace.created"
+      },
+      {
+        "on": "workspace.removed"
+      },
+      {
+        "on": "agent.status.changed"
+      }
+    ]
+  },
+  "capabilities": [
+    {
+      "kind": "workspace:read"
+    },
+    {
+      "kind": "workspace:write"
+    },
+    {
+      "kind": "agent:read"
+    },
+    {
+      "kind": "storage:own"
+    },
+    {
+      "kind": "settings:own"
+    }
+  ],
+  "cover": {
+    "path": "assets/cover.png",
+    "alt": "The Session Check panel in Orca's sidebar: the current session on top, then worktrees grouped by uncommitted files, check first and can close"
+  },
+  "screenshots": [
+    {
+      "path": "assets/screenshot-overview.png",
+      "alt": "Current session pinned on top, then worktrees grouped by status with colored chips for changed, unpushed and untracked files",
+      "caption": "Which worktrees still have open work"
+    },
+    {
+      "path": "assets/screenshot-projects.png",
+      "alt": "The same list grouped by project",
+      "caption": "Group by project"
+    },
+    {
+      "path": "assets/screenshot-light.png",
+      "alt": "The panel in Orca's light theme",
+      "caption": "Works in the light theme"
+    }
+  ]
+}
