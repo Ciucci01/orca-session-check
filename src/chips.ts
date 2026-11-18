@@ -2,7 +2,7 @@
 import { errorText, tr, type Lang, type MsgKey } from './i18n'
 import type { Session } from './protocol'
 
-/** Red is kept for what is really wrong (conflict, merge or rebase running). Open work is calm: blue and amber. */
+/** Red is kept for what is really wrong (conflict, merge or rebase running, a secret). Open work is calm: blue and amber. */
 export type ChipTone = 'neutral' | 'accent' | 'success' | 'warning' | 'danger'
 export type Chip = { text: string; tone: ChipTone }
 
@@ -36,6 +36,12 @@ export function chips(s: Session, lang: Lang = 'en'): Chip[] {
   if (s.agent === 'permission') add('chip.agentWaits', 'warning')
   // The operation is one of git's fixed names (merge, rebase, ...), inserted as text
   if (s.operation) add('chip.operation', 'danger', { op: s.operation })
+  // A file named like a secret is the one thing that is red without being a git operation
+  const tracked = s.sensitiveTracked ?? 0
+  const loose = (s.sensitiveSecrets ?? 0) - tracked
+  if (loose > 0) add('chip.sensitive', 'danger', { n: loose })
+  if (tracked > 0) add('chip.secretInRepo', 'warning', { n: tracked })
+  if ((s.sensitiveCount ?? 0) > (s.sensitiveSecrets ?? 0)) add('chip.junk', 'warning')
   if (s.untracked > 0) add('chip.untracked', 'neutral', { n: s.untracked })
   if (s.stash > 0) add('chip.stash', 'neutral', { n: s.stash })
   // Why a worktree without upstream or with local commits can still be closed

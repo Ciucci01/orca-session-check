@@ -57,3 +57,13 @@ test('background seconds: 0 or 30 to 600, rounded, null for anything else', () =
   assert.equal(clampBackground('60'), null)
   assert.equal(clampBackground(undefined), null)
 })
+
+test('agent done text: the number of sensitive files is added to open work, never alone', () => {
+  const s = { project: 'acme-shop', name: 'checkout', uncommitted: 0, untracked: 1, ahead: 0, sensitiveSecrets: 1 }
+  assert.equal(agentDoneText(s), 'acme-shop / checkout: agent finished, 1 new file, 1 sensitive file')
+  assert.equal(agentDoneText({ ...s, uncommitted: 2, sensitiveSecrets: 3 }), 'acme-shop / checkout: agent finished, 2 files uncommitted, 1 new file, 3 sensitive files')
+  assert.equal(agentDoneText({ ...s, sensitiveSecrets: 0 }), 'acme-shop / checkout: agent finished, 1 new file')
+  assert.equal(agentDoneText({ ...s, untracked: 0 }), null)
+  assert.equal(agentDoneText(s, 'de'), 'acme-shop / checkout: Agent fertig, 1 neue Datei, 1 sensible Datei')
+  assert.equal(agentDoneText({ ...s, sensitiveSecrets: 2 }, 'es'), 'acme-shop / checkout: agente terminado, 1 archivo nuevo, 2 archivos sensibles')
+})

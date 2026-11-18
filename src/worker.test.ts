@@ -262,10 +262,10 @@ t('hiding is stored and forgotten when the workspace is gone', async () => {
 t('settings are read, clamped and validated', async () => {
   const host = mockHost({ results: { 'workspace.list': list([]) }, settings: { intervalSeconds: 2, baseBranch: ' origin/dev ', backgroundSeconds: 10, notifyOnAgentDone: false } })
   const worker = await mount(host)
-  assert.deepEqual(await worker.request('config.get'), { baseBranch: 'origin/dev', intervalSeconds: 10, notifyOnAgentDone: false, backgroundSeconds: 30, language: 'auto' })
-  assert.deepEqual(await worker.request('config.set', { intervalSeconds: 9999 }), { baseBranch: 'origin/dev', intervalSeconds: 300, notifyOnAgentDone: false, backgroundSeconds: 30, language: 'auto' })
+  assert.deepEqual(await worker.request('config.get'), { baseBranch: 'origin/dev', intervalSeconds: 10, notifyOnAgentDone: false, backgroundSeconds: 30, language: 'auto', warnSensitive: true })
+  assert.deepEqual(await worker.request('config.set', { intervalSeconds: 9999 }), { baseBranch: 'origin/dev', intervalSeconds: 300, notifyOnAgentDone: false, backgroundSeconds: 30, language: 'auto', warnSensitive: true })
   await worker.request('config.set', { intervalSeconds: 'x' as never, baseBranch: 5 as never })
-  assert.deepEqual(await worker.request('config.get'), { baseBranch: 'origin/dev', intervalSeconds: 300, notifyOnAgentDone: false, backgroundSeconds: 30, language: 'auto' })
+  assert.deepEqual(await worker.request('config.get'), { baseBranch: 'origin/dev', intervalSeconds: 300, notifyOnAgentDone: false, backgroundSeconds: 30, language: 'auto', warnSensitive: true })
   const bg = async (value: unknown) => ((await worker.request('config.set', { backgroundSeconds: value as never })) as { backgroundSeconds: number }).backgroundSeconds
   assert.equal(await bg(9999), 600)
   assert.equal(await bg(5), 30)
@@ -285,7 +285,7 @@ t('settings are read, clamped and validated', async () => {
 t('without stored settings the defaults apply', async () => {
   const host = mockHost({ results: { 'workspace.list': list([]) } })
   const worker = await mount(host)
-  assert.deepEqual(await worker.request('config.get'), { baseBranch: '', intervalSeconds: 30, notifyOnAgentDone: true, backgroundSeconds: 120, language: 'auto' })
+  assert.deepEqual(await worker.request('config.get'), { baseBranch: '', intervalSeconds: 30, notifyOnAgentDone: true, backgroundSeconds: 120, language: 'auto', warnSensitive: true })
 })
 
 t('the refresh command scans and counts', async () => {
@@ -870,4 +870,81 @@ t('errors reach the panel with a message code, the text stays English', async ()
   assert.equal(by.gone.error, 'folder not found')
   assert.equal(by.gone.errorCode, 'err.folderNotFound')
   assert.equal(by.folder.errorCode, 'err.folderWorkspace')
+})
+
+// Files that must not be committed
+
+t('a new .env keeps the worktree and is listed; the warning off reports nothing', async () => {
+  const dir = await repo()
+  await writeFile(join(dir, '.env'), 'X=1\n')
+  const host = mockHost({ settings: { warnSensitive: false }, results: { 'workspace.list': list([ws('w1', dir)]) } })
+  const worker = await mount(host)
+  const off = ((await worker.request('sessions.get')) as SessionsState).sessions[0]
+  assert.deepEqual([off.verdict, off.sensitive, off.sensitiveCount, off.sensitiveSecrets, off.sensitiveTracked], ['check', [], 0, 0, 0])
+  assert.ok(!off.reasons.some((r) => r.includes('sensitive')))
+  // switched on from the panel: the verdict changes at once, without reading git again
+  const scans = host.callsOf('workspace.list').length
+  const cfg = (await worker.request('config.set', { warnSensitive: true })) as { warnSensitive: boolean }
+  assert.equal(cfg.warnSensitive, true)
+  assert.equal(host.data().settings.warnSensitive, true)
+  const on = sessionOf(worker, 'w1')
+  assert.equal(on?.verdict, 'keep')
+  assert.deepEqual(on?.sensitive, [{ path: '.env', kind: 'secret', tracked: false, rule: '.env' }])
+  assert.equal(on?.sensitiveCount, 1)
+  assert.ok(on?.reasons.includes('1 sensitive file not ignored'))
+  assert.equal(host.callsOf('workspace.list').length, scans)
+  // a value that is not a boolean is ignored
+  await worker.request('config.set', { warnSensitive: 'no' as never })
+  assert.equal(((await worker.request('config.get')) as { warnSensitive: boolean }).warnSensitive, true)
+  await worker.request('config.set', { warnSensitive: false })
+  assert.equal(sessionOf(worker, 'w1')?.verdict, 'check')
+  assert.deepEqual(sessionOf(worker, 'w1')?.sensitive, [])
+})
+
+t('a hidden worktree comes back when a secret appears, and one with a secret cannot be hidden', async () => {
+  const { dir } = await withRemote()
+  await writeFile(join(dir, 'notes.txt'), 'n\n')
+  const host = mockHost({ results: { 'workspace.list': list([ws('w1', dir, { branch: 'main' })]) } })
+  const worker = await mount(host)
+  assert.equal(((await worker.request('sessions.get')) as SessionsState).sessions[0].verdict, 'check')
+  await worker.request('session.hide', { id: 'w1', hidden: true })
+  assert.deepEqual(host.data().storage.hidden, { w1: 'check' })
+  // still only yellow: stays hidden
+  await writeFile(join(dir, 'more.txt'), 'm\n')
+  assert.equal(((await worker.request('sessions.refresh')) as SessionsState).sessions[0].hidden, true)
+  await writeFile(join(dir, 'id_rsa'), 'k\n')
+  const s = ((await worker.request('sessions.refresh')) as SessionsState).sessions[0]
+  assert.equal(s.verdict, 'keep')
+  assert.equal(s.hidden, false)
+  assert.deepEqual(host.data().storage.hidden, {})
+  await assert.rejects(() => worker.request('session.hide', { id: 'w1', hidden: true }), /open work/)
+})
+
+t('a tracked secret asks for a look but does not keep an otherwise clean worktree open', async () => {
+  const { dir } = await withRemote()
+  await writeFile(join(dir, 'credentials.json'), '{}\n')
+  git(dir, 'add', '.')
+  git(dir, 'commit', '-q', '-m', 'creds')
+  git(dir, 'push', '-q')
+  const host = mockHost({ results: { 'workspace.list': list([ws('w1', dir, { branch: 'main' })]) } })
+  const worker = await mount(host)
+  const s = ((await worker.request('sessions.get')) as SessionsState).sessions[0]
+  assert.equal(s.verdict, 'check')
+  assert.deepEqual(s.reasons, ['1 secret in repo'])
+  assert.deepEqual([s.sensitiveTracked, s.sensitive[0]?.tracked], [1, true])
+})
+
+t('the notification adds the number of sensitive files, not when the warning is off', async () => {
+  const dir = await repo()
+  await writeFile(join(dir, '.env.local'), 'X=1\n')
+  const host = mockHost({ results: { 'workspace.list': list([ws('w1', dir, { name: 'checkout' })]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  await agentRun(worker)
+  assert.deepEqual(notes(host).map((n) => n.body), ['acme-shop / checkout: agent finished, 1 new file, 1 sensitive file'])
+  assert.ok(!notes(host)[0].body.includes('.env'))
+  main.TUNING.notifyGapMs = 0
+  await worker.request('config.set', { warnSensitive: false })
+  await agentRun(worker)
+  assert.equal(notes(host).at(-1)?.body, 'acme-shop / checkout: agent finished, 1 new file')
 })

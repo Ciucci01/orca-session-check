@@ -32,7 +32,7 @@ export const TUNING = {
 export const LOCALE = { system: (): string => Intl.DateTimeFormat().resolvedOptions().locale }
 // Orca's UI locale as BCP-47 ("de-DE", "es-419")
 const LOCALE_PATTERN = /^[A-Za-z]{2,8}(?:[-_][A-Za-z0-9]{1,8}){0,6}$/
-const CONFIG_DEFAULTS: Config = { baseBranch: '', intervalSeconds: 30, notifyOnAgentDone: true, backgroundSeconds: 120, language: 'auto' }
+const CONFIG_DEFAULTS: Config = { baseBranch: '', intervalSeconds: 30, notifyOnAgentDone: true, backgroundSeconds: 120, language: 'auto', warnSensitive: true }
 type EventState = PluginEvents['agent.status.changed']['state']
 
 type Row = {
@@ -82,6 +82,8 @@ export default function activate(orca: OrcaWorkerApi): void {
   const notifiedAt = new Map<string, number>()
   // Language: the setting and the UI locale the panel last told (the worker has no locale API)
   let language = CONFIG_DEFAULTS.language
+  // Off: no file is reported as sensitive and the verdict does not look at names
+  let warnSensitive = CONFIG_DEFAULTS.warnSensitive
   let uiLocale: string | null = null
   const lang = (): Lang => {
     if (uiLocale !== null) return resolveLang(language, uiLocale)
@@ -105,12 +107,17 @@ export default function activate(orca: OrcaWorkerApi): void {
     const bg = clampBackground(await orca.settings.get('backgroundSeconds'))
     if (bg !== null) out.backgroundSeconds = bg
     out.language = languageSetting(await orca.settings.get('language'))
+    const warn = await orca.settings.get('warnSensitive')
+    if (typeof warn === 'boolean') out.warnSensitive = warn
     backgroundSeconds = out.backgroundSeconds
     language = out.language
+    warnSensitive = out.warnSensitive
     return out
   }
 
   const isLocalWorktree = (r: Row) => r.kind === 'worktree' && (r.hostId === null || r.hostId === LOCAL_HOST) && isSafePath(r.path)
+
+  const noSensitive = { sensitive: [], sensitiveCount: 0, sensitiveSecrets: 0, sensitiveTracked: 0 }
 
   function sessionOf(r: Row): Session {
     const c = checked.get(r.id)
@@ -127,7 +134,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       lastActiveAt: r.status?.lastActivityAt ?? null,
       checkedAt: c?.at ?? 0
     }
-    const empty = { uncommitted: 0, staged: 0, untracked: 0, conflicts: 0, ahead: 0, behind: 0, upstream: null, upstreamGone: false, submodules: false, stash: 0, stashTotal: 0, merged: null, operation: null, files: [], moreFiles: 0, lastCommitAt: null, unpushed: [], added: null, removed: null, dirtySince: null }
+    const empty = { uncommitted: 0, staged: 0, untracked: 0, conflicts: 0, ahead: 0, behind: 0, upstream: null, upstreamGone: false, submodules: false, stash: 0, stashTotal: 0, merged: null, operation: null, files: [], moreFiles: 0, lastCommitAt: null, unpushed: [], added: null, removed: null, dirtySince: null, ...noSensitive }
     const failed = (error: string): Session => {
       // An agent at work is a reason to keep the session even when git could not be read
       const busy = agent === 'working' || agent === 'permission'
@@ -138,10 +145,14 @@ export default function activate(orca: OrcaWorkerApi): void {
     if (!c) return failed('not checked yet')
     if (isFailure(c.result)) return failed(c.result.error)
     const s = c.result
+    const sens = warnSensitive
+      ? { sensitive: s.sensitive, sensitiveCount: s.sensitiveCount, sensitiveSecrets: s.sensitiveSecrets, sensitiveTracked: s.sensitiveTracked }
+      : noSensitive
     const v = rate({
       uncommitted: s.uncommitted, staged: s.staged, untracked: s.untracked, conflicts: s.conflicts,
       ahead: s.ahead, upstream: s.upstreamGone ? null : s.upstream, upstreamGone: s.upstreamGone, submodules: s.submodules, detached: s.detached, stash: s.stash, merged: s.merged,
-      operation: s.operation, agent, agentUnknown
+      operation: s.operation, agent, agentUnknown,
+      secrets: sens.sensitiveSecrets, trackedSecrets: sens.sensitiveTracked, junk: sens.sensitiveCount - sens.sensitiveSecrets
     })
     return {
       ...base,
@@ -165,6 +176,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       added: s.added,
       removed: s.removed,
       dirtySince: s.dirtySince,
+      ...sens,
       verdict: v.verdict,
       reasons: v.reasons,
       error: null,
@@ -230,7 +242,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       if (last !== undefined && now - last < TUNING.notifyGapMs) continue
       const s = sessionOf(row)
       if (s.error !== null) continue
-      const body = agentDoneText(s, lang())
+      const body = agentDoneText({ ...s, sensitiveSecrets: Math.max(0, s.sensitiveSecrets - s.sensitiveTracked) }, lang())
       if (!body) continue // clean worktree
       notifiedAt.set(id, now)
       for (const [k, t] of notifiedAt) if (now - t >= TUNING.notifyGapMs) notifiedAt.delete(k)
@@ -452,9 +464,12 @@ export default function activate(orca: OrcaWorkerApi): void {
     if (bg !== null) await orca.settings.set('backgroundSeconds', bg)
     // Only a known value is stored; anything else leaves the setting as it is
     if (typeof input?.language === 'string' && languageSetting(input.language) === input.language) await orca.settings.set('language', input.language)
+    if (typeof input?.warnSensitive === 'boolean') await orca.settings.set('warnSensitive', input.warnSensitive)
     const before = backgroundSeconds
+    const warnBefore = warnSensitive
     const cfg = await getConfig()
     if (cfg.backgroundSeconds !== before) rearmBackground()
+    if (cfg.warnSensitive !== warnBefore) await rerate()
     relabel()
     return cfg
   })
@@ -466,13 +481,22 @@ export default function activate(orca: OrcaWorkerApi): void {
     relabel()
     return { ok: true as const }
   })
+  /** The warning switched on or off: the verdicts change without reading git again */
+  async function rerate(): Promise<void> {
+    if (!scannedOnce || stopped) return
+    await resurface()
+    publish()
+  }
+
   // A change in Orca's Settings takes effect without a restart
   const settingsWatch = orca.settings.onDidChange((change) => {
-    if (change.key !== 'backgroundSeconds' && change.key !== 'language') return
+    if (change.key !== 'backgroundSeconds' && change.key !== 'language' && change.key !== 'warnSensitive') return
     const before = backgroundSeconds
+    const warnBefore = warnSensitive
     void getConfig()
-      .then((cfg) => {
+      .then(async (cfg) => {
         if (cfg.backgroundSeconds !== before) rearmBackground()
+        if (cfg.warnSensitive !== warnBefore) await rerate()
         relabel()
       })
       .catch(() => undefined)

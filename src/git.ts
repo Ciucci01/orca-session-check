@@ -1,11 +1,14 @@
 // Pure git logic: arguments, parsers and the verdict. No I/O, so it is fully testable.
-import type { AgentState, FileEntry, Verdict } from './protocol'
+import type { AgentState, FileEntry, SensitiveFile, Verdict } from './protocol'
+import { classify } from './sensitive'
 
 export const MAX_FILES = 20
 export const MAX_PATH_LENGTH = 300
 /** Tracked changes whose time stamp is read (age of the oldest change) */
 export const MAX_STAT_PATHS = 200
 export const MAX_SUBJECTS = 3
+/** Files that must not be committed, listed per worktree */
+export const MAX_SENSITIVE = 10
 const MAX_SUBJECT_LENGTH = 100
 
 /**
@@ -113,6 +116,8 @@ export type StatusInfo = {
   moreFiles: number
   /** Paths of tracked changes that still exist in the worktree (for their time stamps) */
   statPaths: string[]
+  /** Every entry whose name must not be committed, from all of the output (not only the listed files), raw paths */
+  findings: SensitiveFile[]
 }
 
 /** Control and bidi characters in a name (a new line is legal in git) must not reach the panel as layout or spoof it */
@@ -128,10 +133,16 @@ export function cleanPath(path: string): string {
 export function parseStatus(out: string): StatusInfo {
   const info: StatusInfo = {
     oid: null, head: null, detached: false, upstream: null, hasAheadBehind: false, upstreamGone: false, ahead: 0, behind: 0,
-    uncommitted: 0, staged: 0, untracked: 0, conflicts: 0, files: [], moreFiles: 0, statPaths: []
+    uncommitted: 0, staged: 0, untracked: 0, conflicts: 0, files: [], moreFiles: 0, statPaths: [], findings: []
   }
   const parts = out.split('\0')
   const addFile = (state: string, path: string) => {
+    // Names are judged before the list is cut; a deleted file is gone from the worktree, that is the fix
+    if (!state.includes('D')) {
+      const untracked = state === '??'
+      const m = classify(path, { untracked })
+      if (m) info.findings.push({ path, kind: m.kind, rule: m.rule, tracked: !untracked })
+    }
     if (info.files.length < MAX_FILES) info.files.push({ state, path: cleanPath(path) })
     else info.moreFiles++
   }
@@ -207,6 +218,58 @@ function addStat(info: StatusInfo, xy: string, path: string): void {
 function track(info: StatusInfo, xy: string): void {
   info.uncommitted++
   if (xy[0] && xy[0] !== '.') info.staged++
+}
+
+/**
+ * Parses `git ls-files --stage -z` ("<mode> <object> <stage>\t<path>"): whether a gitlink (submodule) is in the
+ * index, and the tracked files whose name is a secret. Junk is not reported for tracked files.
+ */
+export function parseIndex(out: string): { gitlinks: boolean; gitmodules: boolean; secrets: SensitiveFile[] } {
+  let gitlinks = false
+  let gitmodules = false
+  const seen = new Set<string>()
+  const secrets: SensitiveFile[] = []
+  for (const entry of out.split('\0')) {
+    if (!entry) continue
+    if (entry.startsWith('160000 ')) gitlinks = true
+    const tab = entry.indexOf('\t')
+    if (tab < 0) continue
+    const path = entry.slice(tab + 1)
+    if (path === '.gitmodules') gitmodules = true
+    const m = classify(path)
+    // A conflict lists one path up to three times (stages 1 to 3)
+    if (m?.kind !== 'secret' || seen.has(path)) continue
+    seen.add(path)
+    secrets.push({ path, kind: 'secret', rule: m.rule, tracked: true })
+  }
+  return { gitlinks, gitmodules, secrets }
+}
+
+export type SensitiveSummary = { sensitive: SensitiveFile[]; sensitiveCount: number; sensitiveSecrets: number; sensitiveTracked: number }
+
+const sensitiveRank = (f: SensitiveFile) => (f.kind === 'secret' ? (f.tracked ? 0 : 1) : 2)
+
+/** One entry per path, tracked secrets first, then new secrets, then junk; the list is cut, the counts are not */
+export function summarizeSensitive(findings: readonly SensitiveFile[]): SensitiveSummary {
+  const byPath = new Map<string, SensitiveFile>()
+  for (const f of findings) {
+    const prev = byPath.get(f.path)
+    if (!prev || sensitiveRank(f) < sensitiveRank(prev)) byPath.set(f.path, f)
+  }
+  const all = [...byPath.values()].sort((a, b) => sensitiveRank(a) - sensitiveRank(b) || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+  let secrets = 0
+  let tracked = 0
+  for (const f of all) {
+    if (f.kind !== 'secret') continue
+    secrets++
+    if (f.tracked) tracked++
+  }
+  return {
+    sensitive: all.slice(0, MAX_SENSITIVE).map((f) => ({ path: cleanPath(f.path), kind: f.kind, tracked: f.tracked, rule: f.rule })),
+    sensitiveCount: all.length,
+    sensitiveSecrets: secrets,
+    sensitiveTracked: tracked
+  }
 }
 
 /** `git log -1 --format=%ct`: seconds since the epoch to milliseconds, null for anything else */
@@ -303,6 +366,11 @@ export type VerdictInput = {
   upstreamGone?: boolean
   /** The repository has submodules, their changes are not looked at */
   submodules?: boolean
+  /** Files named like secrets (keys, .env, ...), and how many of them are tracked already */
+  secrets?: number
+  trackedSecrets?: number
+  /** Files that do not belong in git (node_modules, .DS_Store, new archives) */
+  junk?: number
 }
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
@@ -317,6 +385,12 @@ export function verdict(i: VerdictInput): { verdict: Verdict; reasons: string[] 
   if (i.agent === 'working') keep.push('agent working')
   if (i.agent === 'permission') keep.push('agent waits for you')
   if (i.operation) keep.push(`${i.operation} in progress`)
+  // A secret that could still go into a commit keeps the session open. One that is tracked already needs a look,
+  // but closing the session loses nothing (and a committed test certificate must not block the list for ever)
+  const tracked = Math.max(0, i.trackedSecrets ?? 0)
+  const loose = Math.max(0, (i.secrets ?? 0) - tracked)
+  if (loose > 0) keep.push(`${plural(loose, 'sensitive file')} not ignored`)
+  if (tracked > 0) check.push(`${plural(tracked, 'secret')} in repo`)
   if (i.untracked > 0) check.push(`${i.untracked} untracked`)
   if (i.stash > 0) check.push(plural(i.stash, 'stash entry', 'stash entries'))
   if (!i.upstream && !i.detached && i.merged !== true) {
@@ -324,6 +398,7 @@ export function verdict(i: VerdictInput): { verdict: Verdict; reasons: string[] 
     check.push(i.merged === false ? `${what}, has commits outside the base branch` : `${what}, base branch unknown`)
   }
   if (i.submodules) check.push('submodules not checked')
+  if ((i.junk ?? 0) > 0) check.push(plural(i.junk ?? 0, 'junk file'))
   // Commits on a detached HEAD that no base branch holds are reachable only through the reflog
   if (i.detached && i.merged === false) keep.push('detached HEAD with commits outside the base branch')
   else if (i.detached && i.merged !== true) check.push('detached HEAD')

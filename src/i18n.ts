@@ -77,6 +77,9 @@ const DICT = {
     de: { one: '{n} Stash-Eintrag auf anderen Branches', other: '{n} Stash-Einträge auf anderen Branches' },
     es: { one: '{n} entrada de stash en otras branches', other: '{n} entradas de stash en otras branches' }
   },
+  'card.doNotCommit': { en: 'Do not commit', de: 'Nicht committen', es: 'No hacer commit' },
+  'card.notIgnored': { en: '{path} (not ignored)', de: '{path} (nicht ignoriert)', es: '{path} (no ignorado)' },
+  'card.alreadyTracked': { en: '{path} (already tracked)', de: '{path} (schon versioniert)', es: '{path} (ya versionado)' },
   'card.allMerged': { en: 'all commits are already in the base branch', de: 'alle Commits sind schon im Basis-Branch', es: 'todos los commits ya están en la branch base' },
   // Chips
   'chip.changed': {
@@ -102,6 +105,17 @@ const DICT = {
   'chip.submodules': { en: 'submodules not checked', de: 'Submodule nicht geprüft', es: 'submódulos sin revisar' },
   'chip.behind': { en: '{n} behind', de: '{n} zurück', es: '{n} por detrás' },
   'chip.agentUnknown': { en: 'agent unknown', de: 'Agent unbekannt', es: 'agente desconocido' },
+  'chip.sensitive': {
+    en: { one: '{n} sensitive file', other: '{n} sensitive files' },
+    de: { one: '{n} sensible Datei', other: '{n} sensible Dateien' },
+    es: { one: '{n} archivo sensible', other: '{n} archivos sensibles' }
+  },
+  'chip.secretInRepo': {
+    en: { one: '{n} secret in repo', other: '{n} secrets in repo' },
+    de: { one: '{n} Geheimnis im Repo', other: '{n} Geheimnisse im Repo' },
+    es: { one: '{n} secreto en el repo', other: '{n} secretos en el repo' }
+  },
+  'chip.junk': { en: 'junk files', de: 'Datenmüll', es: 'archivos basura' },
   'chip.clean': { en: 'clean', de: 'sauber', es: 'limpio' },
   // File states (git's two-letter code as a word)
   'file.new': { en: 'new', de: 'neu', es: 'nuevo' },
@@ -117,9 +131,9 @@ const DICT = {
   // Settings
   'settings.title': { en: 'Settings', de: 'Einstellungen', es: 'Ajustes' },
   'settings.description': {
-    en: 'base branch, refresh, notifications, language',
-    de: 'Basis-Branch, Aktualisierung, Benachrichtigungen, Sprache',
-    es: 'branch base, actualización, avisos, idioma'
+    en: 'base branch, refresh, notifications, sensitive files, language',
+    de: 'Basis-Branch, Aktualisierung, Benachrichtigungen, sensible Dateien, Sprache',
+    es: 'branch base, actualización, avisos, archivos sensibles, idioma'
   },
   'settings.base': { en: 'Base branch (empty = detect from origin/HEAD)', de: 'Basis-Branch (leer = aus origin/HEAD erkennen)', es: 'Branch base (vacío = detectar desde origin/HEAD)' },
   'settings.basePlaceholder': { en: 'e.g. origin/main', de: 'z. B. origin/main', es: 'p. ej. origin/main' },
@@ -135,6 +149,11 @@ const DICT = {
     en: 'Notify when an agent finishes and leaves open work',
     de: 'Benachrichtigen, wenn ein Agent fertig ist und offene Arbeit hinterlässt',
     es: 'Avisar cuando un agente termine y deje trabajo abierto'
+  },
+  'settings.warnSensitive': {
+    en: 'Warn about files that must not be committed (by name only)',
+    de: 'Vor Dateien warnen, die nicht ins Repo gehören (nur nach dem Namen)',
+    es: 'Avisar de archivos que no deben ir al repo (solo por el nombre)'
   },
   'settings.language': { en: 'Language', de: 'Sprache', es: 'Idioma' },
   'settings.languageAuto': { en: 'Automatic', de: 'Automatisch', es: 'Automático' },
@@ -168,6 +187,11 @@ const DICT = {
     en: { one: '{n} commit unpushed', other: '{n} commits unpushed' },
     de: { one: '{n} Commit ungepusht', other: '{n} Commits ungepusht' },
     es: { one: '{n} commit sin push', other: '{n} commits sin push' }
+  },
+  'notify.sensitive': {
+    en: { one: '{n} sensitive file', other: '{n} sensitive files' },
+    de: { one: '{n} sensible Datei', other: '{n} sensible Dateien' },
+    es: { one: '{n} archivo sensible', other: '{n} archivos sensibles' }
   },
   'command.refreshed': {
     en: { one: '{n} worktree', other: '{n} worktrees' },

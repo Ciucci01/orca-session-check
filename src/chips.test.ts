@@ -5,7 +5,7 @@ import type { Session } from './protocol'
 const base: Session = {
   id: 'w', name: 'acme', project: 'acme-shop', branch: 'main', current: false, hidden: false, verdict: 'safe', reasons: [],
   uncommitted: 0, staged: 0, untracked: 0, conflicts: 0, ahead: 0, behind: 0, upstream: 'origin/main', upstreamGone: false, submodules: false, stash: 0, stashTotal: 0,
-  merged: null, operation: null, agent: null, files: [], moreFiles: 0, error: null, errorCode: null, lastCommitAt: null, lastActiveAt: null, unpushed: [], added: null, removed: null, dirtySince: null, checkedAt: 1
+  merged: null, operation: null, agent: null, files: [], moreFiles: 0, error: null, errorCode: null, lastCommitAt: null, lastActiveAt: null, unpushed: [], added: null, removed: null, dirtySince: null, sensitive: [], sensitiveCount: 0, sensitiveSecrets: 0, sensitiveTracked: 0, checkedAt: 1
 }
 const texts = (s: Partial<Session>) => chips({ ...base, ...s }).map((c) => `${c.tone}:${c.text}`)
 
@@ -61,4 +61,18 @@ test('state codes read as words', async () => {
   assert.equal(stateLabel('R.'), 'renamed, staged')
   assert.equal(stateLabel('UU'), 'conflict')
   assert.equal(stateLabel('xyz'), 'xyz')
+})
+
+test('a loose secret is a red chip, a tracked one is amber, junk is amber; the group follows the verdict', () => {
+  const loose = { verdict: 'keep' as const, untracked: 1, sensitiveCount: 1, sensitiveSecrets: 1, sensitiveTracked: 0 }
+  assert.deepEqual(texts(loose), ['danger:1 sensitive file', 'neutral:1 untracked'])
+  assert.deepEqual(texts({ verdict: 'keep', sensitiveCount: 3, sensitiveSecrets: 3, sensitiveTracked: 0, untracked: 3 }).slice(0, 1), ['danger:3 sensitive files'])
+  assert.deepEqual(texts({ verdict: 'keep', sensitiveCount: 1, sensitiveSecrets: 1, sensitiveTracked: 1 }), ['warning:1 secret in repo'])
+  assert.deepEqual(texts({ verdict: 'keep', sensitiveCount: 4, sensitiveSecrets: 3, sensitiveTracked: 2, untracked: 2 }), ['danger:1 sensitive file', 'warning:2 secrets in repo', 'warning:junk files', 'neutral:2 untracked'])
+  assert.deepEqual(texts({ verdict: 'check', sensitiveCount: 1, sensitiveSecrets: 0, untracked: 1 }), ['warning:junk files', 'neutral:1 untracked'])
+  assert.deepEqual(chips({ ...base, verdict: 'keep', sensitiveCount: 2, sensitiveSecrets: 2, sensitiveTracked: 1 }, 'de').map((c) => c.text), ['1 sensible Datei', '1 Geheimnis im Repo'])
+  assert.deepEqual(chips({ ...base, verdict: 'check', sensitiveCount: 1 }, 'es').map((c) => c.text), ['archivos basura'])
+  // a secret without uncommitted files keeps the worktree open; with them it is with the uncommitted ones
+  assert.equal(groupOf({ uncommitted: 0, verdict: 'keep' }), 'keep')
+  assert.equal(groupOf({ uncommitted: 2, verdict: 'keep' }), 'dirty')
 })

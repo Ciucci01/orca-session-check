@@ -63,12 +63,20 @@ export function statusBar(items: readonly BarItem[], lang: Lang = 'en'): Bar {
   return { text: tr(lang, 'bar.ok'), tone: 'success', tooltip: tr(lang, 'bar.tip.ok') }
 }
 
-/** "acme-shop / checkout: agent finished, 3 files uncommitted, 1 commit unpushed"; null when there is nothing open */
-export function agentDoneText(s: { project: string | null; name: string; uncommitted: number; untracked: number; ahead: number }, lang: Lang = 'en'): string | null {
+/**
+ * "acme-shop / checkout: agent finished, 3 files uncommitted, 1 commit unpushed, 1 sensitive file"; null when there
+ * is nothing open. Sensitive files are only added to open work: a secret that is tracked already is no news.
+ */
+export function agentDoneText(
+  s: { project: string | null; name: string; uncommitted: number; untracked: number; ahead: number; sensitiveSecrets?: number },
+  lang: Lang = 'en'
+): string | null {
   const parts: string[] = []
   if (s.uncommitted > 0) parts.push(tr(lang, 'notify.uncommitted', { n: s.uncommitted }))
   if (s.untracked > 0) parts.push(tr(lang, 'notify.untracked', { n: s.untracked }))
   if (s.ahead > 0) parts.push(tr(lang, 'notify.unpushed', { n: s.ahead }))
   if (parts.length === 0) return null
+  const secrets = s.sensitiveSecrets ?? 0
+  if (secrets > 0) parts.push(tr(lang, 'notify.sensitive', { n: secrets }))
   return cut(tr(lang, 'notify.done', { label: label(s.project, s.name), parts: parts.join(', ') }), BODY_MAX)
 }

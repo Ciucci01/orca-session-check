@@ -14,15 +14,19 @@ import {
   isSafePath,
   operationFrom,
   parseCommitTime,
+  parseIndex,
   parseStash,
   parseStatus,
   STATUS_ARGS,
+  summarizeSensitive,
+  type SensitiveSummary,
   type StatusInfo
 } from './git'
+import type { SensitiveFile } from './protocol'
 
 export const GIT_TIMEOUT_MS = 8000
 export const GIT_MAX_BUFFER = 2 * 1024 * 1024
-/** The list of all tracked files (for gitlinks) can be long in a big repository: up to about 700k files */
+/** The list of all tracked files (gitlinks, secret names) can be long in a big repository: up to about 700k files */
 const LIST_MAX_BUFFER = 64 * 1024 * 1024
 export const MAX_PARALLEL = 4
 
@@ -89,7 +93,7 @@ export async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (it
   return out
 }
 
-export type RepoState = StatusInfo & {
+export type RepoState = Omit<StatusInfo, 'findings'> & SensitiveSummary & {
   stash: number
   stashTotal: number
   operation: string | null
@@ -122,7 +126,7 @@ export async function scanRepo(path: string, baseSetting: string): Promise<RepoS
 
     const status = await runGit(path, o, STATUS_ARGS)
     if (status.code !== 0) return { error: await failureText(path, o) }
-    const info = parseStatus(status.stdout)
+    const { findings, ...info } = parseStatus(status.stdout)
 
     const stashList = await runGit(path, o, ['stash', 'list', '--format=%gs'])
     if (stashList.code !== 0) return { error: 'git stash list failed' }
@@ -155,8 +159,12 @@ export async function scanRepo(path: string, baseSetting: string): Promise<RepoS
     if (!info.oid) merged = true // no commit yet: nothing to lose
     else if (info.ahead > 0 || !info.upstream || info.upstreamGone || info.detached) merged = await isMerged(path, o, baseSetting)
 
+    // One list of the index answers both: submodules and the secrets that are tracked already
+    const index = await readIndex(path, o)
+
     return {
       ...info,
+      ...summarizeSensitive([...index.secrets, ...findings]),
       stash: info.head ? (stash.byBranch.get(info.head) ?? 0) : 0,
       stashTotal: stash.total,
       operation,
@@ -165,7 +173,7 @@ export async function scanRepo(path: string, baseSetting: string): Promise<RepoS
       added,
       removed,
       dirtySince,
-      submodules: await hasSubmodules(path, o),
+      submodules: index.submodules,
       merged
     }
   } catch (e) {
@@ -178,17 +186,21 @@ export async function scanRepo(path: string, baseSetting: string): Promise<RepoS
   }
 }
 
-/** A submodule is a gitlink (mode 160000) in the index or a .gitmodules file; a list that is still too big counts as having one */
-async function hasSubmodules(path: string, o: readonly string[]): Promise<boolean> {
-  const top = (await runGit(path, o, ['rev-parse', '--show-toplevel'])).stdout.trim()
-  const root = top.startsWith('/') ? top : path
-  if (await stat(join(root, '.gitmodules')).then(() => true, () => false)) return true
+/**
+ * One `git ls-files --stage -z` at the top of the worktree (names and modes only, no contents):
+ * a submodule is a gitlink (mode 160000) or a tracked .gitmodules file, and the tracked files named like secrets.
+ * A list that fails or is still too big counts as having submodules and adds no secrets.
+ */
+async function readIndex(path: string, o: readonly string[]): Promise<{ submodules: boolean; secrets: SensitiveFile[] }> {
   try {
-    const files = await runGit(path, o, ['ls-files', '--stage', '-z'], GIT_TIMEOUT_MS, LIST_MAX_BUFFER)
-    if (files.code !== 0) return true
-    return files.stdout.split('\0').some((entry) => entry.startsWith('160000 '))
+    // Run in the workspace itself and ask for the whole index with ":/": a repository that redirects core.worktree
+    // must not make this call read the index and the config of some other repository
+    const files = await runGit(path, o, ['ls-files', '--stage', '-z', '--full-name', '--', ':/'], GIT_TIMEOUT_MS, LIST_MAX_BUFFER)
+    if (files.code !== 0) return { submodules: true, secrets: [] }
+    const index = parseIndex(files.stdout)
+    return { submodules: index.gitmodules || index.gitlinks, secrets: index.secrets }
   } catch (e) {
-    if (e instanceof GitError && e.reason === 'too-large') return true
+    if (e instanceof GitError && e.reason === 'too-large') return { submodules: true, secrets: [] }
     throw e
   }
 }

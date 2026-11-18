@@ -668,3 +668,190 @@ t('a long output is allowed where asked for, and cut where not', async () => {
   assert.ok(all.stdout.split('\0').length > 400)
   assert.equal(ok(await scanRepo(dir, '')).submodules, false)
 })
+
+// --- Files that must not be committed (names only) ---------------------------------------
+
+const names = (s: RepoState) => s.sensitive.map((f) => `${f.path}|${f.kind}|${f.tracked ? 'tracked' : 'new'}`)
+
+t('an untracked .env is found, a .env that .gitignore lists is not', async () => {
+  const dir = await repo()
+  await writeFile(join(dir, '.env'), 'X=1\n')
+  await writeFile(join(dir, '.env.example'), 'X=\n')
+  const s = ok(await scanRepo(dir, ''))
+  assert.deepEqual(names(s), ['.env|secret|new'])
+  assert.deepEqual([s.sensitiveCount, s.sensitiveSecrets, s.sensitiveTracked], [1, 1, 0])
+  await writeFile(join(dir, '.gitignore'), '.env\n')
+  const ignored = ok(await scanRepo(dir, ''))
+  assert.deepEqual(names(ignored), [])
+  assert.equal(ignored.sensitiveCount, 0)
+})
+
+t('a tracked .env is found as tracked, also in a clean worktree; .env.example is not', async () => {
+  const dir = await repo()
+  await writeFile(join(dir, '.env'), 'X=1\n')
+  await writeFile(join(dir, '.env.example'), 'X=\n')
+  await mkdir(join(dir, 'deploy'))
+  await writeFile(join(dir, 'deploy', 'prod.KEY'), 'k\n')
+  git(dir, 'add', '.')
+  git(dir, 'commit', '-q', '-m', 'oops')
+  const s = ok(await scanRepo(dir, ''))
+  assert.equal(s.uncommitted + s.untracked, 0)
+  assert.deepEqual(names(s), ['.env|secret|tracked', 'deploy/prod.KEY|secret|tracked'])
+  assert.deepEqual([s.sensitiveSecrets, s.sensitiveTracked], [2, 2])
+  // changed afterwards: still one entry per file
+  await writeFile(join(dir, '.env'), 'X=2\n')
+  assert.deepEqual(names(ok(await scanRepo(dir, ''))), ['.env|secret|tracked', 'deploy/prod.KEY|secret|tracked'])
+})
+
+t('a secret among more than 20 changed files is still found, junk is found too', async () => {
+  const dir = await repo()
+  for (let i = 0; i < 30; i++) await writeFile(join(dir, `f${String(i).padStart(2, '0')}.txt`), 'x\n')
+  // sorts after the 30 files, so it is beyond the 20 listed ones
+  await writeFile(join(dir, 'service-account-prod.json'), '{}\n')
+  await mkdir(join(dir, 'node_modules'))
+  await writeFile(join(dir, 'node_modules', 'x.js'), 'x\n')
+  // not .DS_Store: a global excludes file often ignores it already
+  await writeFile(join(dir, 'Thumbs.db'), 'x')
+  const s = ok(await scanRepo(dir, ''))
+  assert.equal(s.files.length, 20)
+  assert.ok(s.moreFiles > 0)
+  assert.ok(!s.files.some((f) => f.path === 'service-account-prod.json'))
+  assert.deepEqual(names(s), ['service-account-prod.json|secret|new', 'Thumbs.db|junk|new', 'node_modules/|junk|new'])
+  assert.deepEqual([s.sensitiveCount, s.sensitiveSecrets], [3, 1])
+})
+
+t('known limit: a secret inside a new folder that git lists as one entry is not seen', async () => {
+  const dir = await repo()
+  await mkdir(join(dir, 'config'))
+  await writeFile(join(dir, 'config', '.env'), 'X=1\n')
+  const s = ok(await scanRepo(dir, ''))
+  assert.deepEqual(s.files.map((f) => f.path), ['config/'])
+  assert.equal(s.sensitiveCount, 0)
+})
+
+/** A git that logs every call and then runs the real git; `fail` makes calls with that word exit 1 */
+async function loggingGit(fail?: string): Promise<() => Promise<string[]>> {
+  const real = execFileSync('/usr/bin/which', ['git'], { encoding: 'utf8' }).trim()
+  const d = await tmp('acme-loggit-')
+  const log = join(d, 'calls.log')
+  const failing = fail ? `case "$*" in *${fail}*) exit 1 ;; esac\n` : ''
+  await writeFile(join(d, 'git'), `#!/bin/sh\necho "$*" >> '${log}'\n${failing}exec '${real}' "$@"\n`)
+  await chmod(join(d, 'git'), 0o755)
+  process.env.PATH = d
+  const { readFile } = await import('node:fs/promises')
+  return async () => (await readFile(log, 'utf8').catch(() => '')).split('\n').filter(Boolean)
+}
+
+t('one ls-files call serves both the submodule check and the tracked secrets', async () => {
+  const dir = await repo()
+  const inner = join(dir, 'vendor')
+  await mkdir(inner)
+  git(inner, 'init', '-q', '-b', 'main')
+  await writeFile(join(inner, 'x.txt'), 'x\n')
+  git(inner, 'add', '.')
+  git(inner, 'commit', '-q', '-m', 'inner')
+  await writeFile(join(dir, 'id_ed25519'), 'k\n')
+  await writeFile(join(dir, '.gitmodules'), '')
+  git(dir, 'add', '.')
+  git(dir, 'commit', '-q', '-m', 'gitlink and a key')
+  const calls = await loggingGit()
+  const s = ok(await scanRepo(dir, ''))
+  assert.equal(s.submodules, true)
+  assert.deepEqual(names(s), ['id_ed25519|secret|tracked'])
+  const all = await calls()
+  assert.equal(all.filter((c) => c.includes('ls-files')).length, 1, all.join('\n'))
+  // no git command reads contents for this: no cat-file, show, grep, blame
+  assert.ok(!all.some((c) => / -C \S+ (cat-file|show|grep|blame)\b/.test(c)), all.join('\n'))
+})
+
+t('a failing ls-files keeps the fail-closed answer: submodules yes, no extra secrets', async () => {
+  const dir = await repo()
+  await writeFile(join(dir, '.env'), 'X=1\n')
+  git(dir, 'add', '.')
+  git(dir, 'commit', '-q', '-m', 'env')
+  await loggingGit('ls-files')
+  const s = ok(await scanRepo(dir, ''))
+  assert.equal(s.submodules, true)
+  assert.equal(s.sensitiveCount, 0)
+})
+
+t('a workspace in a subfolder: names from the whole worktree, paths from its top', async () => {
+  const dir = await repo()
+  await mkdir(join(dir, 'sub'))
+  await mkdir(join(dir, 'other'))
+  await writeFile(join(dir, 'sub', 'z.txt'), 'z\n')
+  await writeFile(join(dir, 'other', 'secrets.yml'), 's\n')
+  git(dir, 'add', '.')
+  git(dir, 'commit', '-q', '-m', 'z')
+  await writeFile(join(dir, '.env.local'), 'X=1\n')
+  const s = ok(await scanRepo(join(dir, 'sub'), ''))
+  assert.deepEqual(names(s), ['other/secrets.yml|secret|tracked', '.env.local|secret|new'])
+})
+
+t('a repository with 3000 files is scanned fast', async () => {
+  const dir = await repo()
+  await mkdir(join(dir, 'many'))
+  await Promise.all(Array.from({ length: 3000 }, (_, i) => writeFile(join(dir, 'many', `file-${i}.txt`), `${i}\n`)))
+  await writeFile(join(dir, 'many', 'server.pem'), 'p\n')
+  git(dir, 'add', '.')
+  git(dir, 'commit', '-q', '-m', 'many')
+  for (let i = 0; i < 50; i++) await writeFile(join(dir, 'many', `file-${i}.txt`), 'changed\n')
+  const started = Date.now()
+  const s = ok(await scanRepo(dir, ''))
+  const took = Date.now() - started
+  assert.equal(s.uncommitted, 50)
+  assert.deepEqual(names(s), ['many/server.pem|secret|tracked'])
+  assert.ok(took < 4000, `${took} ms`)
+})
+
+t('security: names only, a .env nobody may read is reported and its content never shows up', async () => {
+  const dir = await repo()
+  const markerText = `ACME_SECRET_${Date.now()}_${Math.random().toString(36).slice(2)}`
+  await writeFile(join(dir, '.env'), `TOKEN=${markerText}\n`)
+  await writeFile(join(dir, 'prod.key'), `${markerText}\n`)
+  await chmod(join(dir, '.env'), 0o000)
+  await chmod(join(dir, 'prod.key'), 0o000)
+  try {
+    // control: the file really cannot be read by this user
+    const { readFile } = await import('node:fs/promises')
+    await assert.rejects(() => readFile(join(dir, '.env'), 'utf8'))
+    const s = ok(await scanRepo(dir, ''))
+    assert.deepEqual(names(s), ['.env|secret|new', 'prod.key|secret|new'])
+    assert.ok(!JSON.stringify(s).includes(markerText))
+  } finally {
+    await chmod(join(dir, '.env'), 0o600).catch(() => undefined)
+    await chmod(join(dir, 'prod.key'), 0o600).catch(() => undefined)
+  }
+})
+
+t('a repository that redirects core.worktree cannot make the index of another repository count as tracked', async () => {
+  const other = await repo('acme-other-')
+  await writeFile(join(other, '.netrc'), 'machine x\n')
+  git(other, 'add', '.netrc')
+  git(other, 'commit', '-q', '-m', 'netrc')
+  const evil = await repo('acme-evil-')
+  git(evil, 'config', 'core.worktree', other)
+  const s = await scanRepo(evil, '')
+  // git itself shows the files of the redirected worktree as new files of this repository (untracked); what must not
+  // happen is that the other repository's INDEX is read and its tracked names appear as tracked
+  if (!('error' in s)) assert.equal(s.sensitive.some((f) => f.path === '.netrc' && f.tracked), false, 'the foreign index was read')
+})
+
+t('the whole index is read from a workspace in a subfolder, with full names', async () => {
+  const dir = await repo()
+  await mkdir(join(dir, 'sub'))
+  await writeFile(join(dir, 'sub', 'z.txt'), 'z\n')
+  await writeFile(join(dir, 'secret.pem'), 'x\n')
+  git(dir, 'add', '.')
+  git(dir, 'commit', '-q', '-m', 'z')
+  const s = ok(await scanRepo(join(dir, 'sub'), ''))
+  assert.deepEqual(s.sensitive.map((f) => [f.path, f.tracked]), [['secret.pem', true]])
+})
+
+t('a tracked .gitmodules marks a repository with submodules even without a gitlink', async () => {
+  const dir = await repo()
+  await writeFile(join(dir, '.gitmodules'), '')
+  git(dir, 'add', '.gitmodules')
+  git(dir, 'commit', '-q', '-m', 'gitmodules')
+  assert.equal(ok(await scanRepo(dir, '')).submodules, true)
+})

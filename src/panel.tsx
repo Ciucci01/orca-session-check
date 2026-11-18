@@ -32,7 +32,7 @@ type Filter = 'all' | 'changes' | 'safe'
 type Grouping = 'status' | 'project'
 
 const state = atom<SessionsState | null>(null)
-const config = atom<Config>({ baseBranch: '', intervalSeconds: 30, notifyOnAgentDone: true, backgroundSeconds: 120, language: 'auto' })
+const config = atom<Config>({ baseBranch: '', intervalSeconds: 30, notifyOnAgentDone: true, backgroundSeconds: 120, language: 'auto', warnSensitive: true })
 // Filter and grouping are remembered between runs; the stored value is checked before it is used
 const filter = atom<Filter>('filter', 'all', { persist: 'plugin' })
 const query = atom('')
@@ -169,7 +169,8 @@ function SessionCard({ s }: { s: Session }) {
   const lang = currentLang()
   const sub = subline(s, lang)
   const notes = detailNotes(s, lang)
-  const hasDetails = s.files.length > 0 || notes.length > 0 || s.unpushed.length > 0
+  const sensitive = s.sensitive ?? []
+  const hasDetails = s.files.length > 0 || notes.length > 0 || s.unpushed.length > 0 || sensitive.length > 0
   const look = glance(s)
   return (
     <Box border={s.current ? 'accent' : true} radius="md" padding="sm">
@@ -218,6 +219,23 @@ function SessionCard({ s }: { s: Session }) {
         {hasDetails ? (
           <Collapsible title={s.files.length > 0 ? tr(lang, 'card.files', { n: s.files.length + s.moreFiles }) : tr(lang, 'card.details')}>
             <Stack gap="xs">
+              {sensitive.length > 0 ? (
+                <Stack gap="xs">
+                  <Text size="xs" weight="semibold" tone="danger">
+                    {tr(lang, 'card.doNotCommit')}
+                  </Text>
+                  {sensitive.map((f, i) => (
+                    <Text key={`${i}:${f.path}`} size="xs" truncate>
+                      {tr(lang, f.tracked ? 'card.alreadyTracked' : 'card.notIgnored', { path: f.path })}
+                    </Text>
+                  ))}
+                  {s.sensitiveCount > sensitive.length ? (
+                    <Text size="xs" muted>
+                      {tr(lang, 'card.more', { n: s.sensitiveCount - sensitive.length })}
+                    </Text>
+                  ) : null}
+                </Stack>
+              ) : null}
               {s.unpushed.length > 0 ? (
                 <Stack gap="xs">
                   <Text size="xs" weight="semibold">
@@ -320,6 +338,11 @@ function SettingsBox() {
           label={tr(lang, 'settings.notify')}
           checked={c.notifyOnAgentDone}
           onChange={(v) => void updateConfig({ notifyOnAgentDone: v })}
+        />
+        <Switch
+          label={tr(lang, 'settings.warnSensitive')}
+          checked={c.warnSensitive !== false}
+          onChange={(v) => void updateConfig({ warnSensitive: v })}
         />
       </Stack>
     </Collapsible>

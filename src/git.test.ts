@@ -264,3 +264,22 @@ test('names lose bidi controls too', () => {
 test('verdict rank: keep is the worst, safe the best', () => {
   assert.deepEqual((['safe', 'check', 'unknown', 'keep'] as const).map(verdictRank), [0, 1, 1, 2])
 })
+
+test('verdict: a loose secret keeps the worktree, a tracked one asks for a look, junk asks for a look', () => {
+  const loose = verdict({ ...clean, untracked: 1, secrets: 1 })
+  assert.equal(loose.verdict, 'keep')
+  assert.ok(loose.reasons.includes('1 sensitive file not ignored'), loose.reasons.join(' | '))
+  const tracked = verdict({ ...clean, secrets: 2, trackedSecrets: 2 })
+  assert.equal(tracked.verdict, 'check')
+  assert.deepEqual(tracked.reasons, ['2 secrets in repo'])
+  const both = verdict({ ...clean, secrets: 3, trackedSecrets: 1 })
+  assert.deepEqual(both.reasons, ['2 sensitive files not ignored', '1 secret in repo'])
+  const junk = verdict({ ...clean, untracked: 1, junk: 1 })
+  assert.equal(junk.verdict, 'check')
+  assert.ok(junk.reasons.includes('1 junk file'))
+  // junk alone never makes a clean worktree green, and never more than yellow
+  assert.equal(verdict({ ...clean, junk: 4 }).verdict, 'check')
+  assert.equal(verdict({ ...clean, secrets: 0, trackedSecrets: 0, junk: 0 }).verdict, 'safe')
+  // odd numbers are not trusted to make it better
+  assert.equal(verdict({ ...clean, secrets: 1, trackedSecrets: -5 }).verdict, 'keep')
+})

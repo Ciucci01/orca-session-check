@@ -2,8 +2,8 @@
   "manifestVersion": 2,
   "id": "session-check",
   "name": "Session Check",
-  "version": "1.1.0",
-  "description": "See at a glance which of your Orca worktrees still have uncommitted files, unpushed commits, stashes or a running agent, and which sessions are safe to close. Status bar count and a notification when an agent leaves open work. Read-only, no network.",
+  "version": "1.2.0",
+  "description": "See at a glance which of your Orca worktrees still have uncommitted files, unpushed commits, stashes or a running agent, and which sessions are safe to close. Status bar count, a notification when an agent leaves open work, and a warning for files named like secrets that are not ignored. Read-only, no network.",
   "engines": {
     "orca": ">=1.4.259"
   },
@@ -63,6 +63,13 @@
         "key": "notifyOnAgentDone",
         "title": "Notify when an agent finishes",
         "description": "Desktop notification when an agent in a worktree finishes and the worktree still has uncommitted files, new files or unpushed commits. At most one per worktree every 10 minutes.",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "warnSensitive",
+        "title": "Warn about sensitive files",
+        "description": "Warn when a worktree has files named like secrets (.env, private keys, credentials) that git does not ignore or that are tracked already, and junk such as node_modules. Judged by the file name only, contents are never read.",
         "type": "boolean",
         "default": true
       },

@@ -125,3 +125,14 @@ test('the changed chip agrees in number in Spanish', () => {
   assert.equal(tr('es', 'chip.changed', { n: 3 }), '3 cambiados')
   assert.equal(tr('de', 'chip.changed', { n: 1 }), '1 geändert')
 })
+
+test('the sensitive file texts in every language', () => {
+  assert.equal(tr('en', 'chip.sensitive', { n: 1 }), '1 sensitive file')
+  assert.equal(tr('de', 'chip.sensitive', { n: 2 }), '2 sensible Dateien')
+  assert.equal(tr('es', 'chip.secretInRepo', { n: 2 }), '2 secretos en el repo')
+  assert.equal(tr('de', 'card.alreadyTracked', { path: '.env' }), '.env (schon versioniert)')
+  assert.equal(tr('es', 'card.notIgnored', { path: '.env' }), '.env (no ignorado)')
+  assert.equal(tr('de', 'settings.warnSensitive'), 'Vor Dateien warnen, die nicht ins Repo gehören (nur nach dem Namen)')
+  // a path with a placeholder in its name is inserted as it is
+  assert.equal(tr('en', 'card.notIgnored', { path: '{n}.pem' }), '{n}.pem (not ignored)')
+})

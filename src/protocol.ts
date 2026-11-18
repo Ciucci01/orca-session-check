@@ -12,6 +12,18 @@ export type FileEntry = {
   path: string
 }
 
+/** A file that must not be committed, found by its name only (contents are never read) */
+export type SensitiveFile = {
+  /** Path relative to the top of the worktree, plain text only */
+  path: string
+  /** secret = key, password or credentials file; junk = folder or file that does not belong in git */
+  kind: 'secret' | 'junk'
+  /** In the index already (committed or staged), or else a new file git does not ignore */
+  tracked: boolean
+  /** The rule from the README table, e.g. ".env.*" or "*.pem" */
+  rule: string
+}
+
 export type Session = {
   /** Orca workspace id */
   id: string
@@ -50,6 +62,13 @@ export type Session = {
   files: FileEntry[]
   /** More changed files than listed */
   moreFiles: number
+  /** Files that must not be committed, secrets first, at most 10 (empty when the warning is off) */
+  sensitive: SensitiveFile[]
+  /** All of them, also those beyond the list */
+  sensitiveCount: number
+  /** Secrets among them, and the secrets that are tracked already */
+  sensitiveSecrets: number
+  sensitiveTracked: number
   /** Why the worktree could not be checked (verdict unknown), in English */
   error: string | null
   /** The same as a message code the panel translates; null when the text is not a known one */
@@ -86,6 +105,8 @@ export type Config = {
   backgroundSeconds: number
   /** Language of the panel, the status bar and the notification; auto = Orca's language */
   language: LanguageSetting
+  /** Warn about files that must not be committed, by name only */
+  warnSensitive: boolean
 }
 
 declare module 'orca' {

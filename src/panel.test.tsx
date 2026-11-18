@@ -19,11 +19,11 @@ function t(name: string, fn: () => Promise<void>): void {
   })
 }
 
-const cfg: Config = { baseBranch: '', intervalSeconds: 30, notifyOnAgentDone: true, backgroundSeconds: 120, language: 'auto' }
+const cfg: Config = { baseBranch: '', intervalSeconds: 30, notifyOnAgentDone: true, backgroundSeconds: 120, language: 'auto', warnSensitive: true }
 const base: Session = {
   id: '', name: '', project: 'acme-shop', branch: 'main', current: false, hidden: false, verdict: 'safe', reasons: ['clean, nothing unpushed'],
   uncommitted: 0, staged: 0, untracked: 0, conflicts: 0, ahead: 0, behind: 0, upstream: 'origin/main', upstreamGone: false, submodules: false, stash: 0, stashTotal: 0,
-  merged: null, operation: null, agent: null, files: [], moreFiles: 0, error: null, errorCode: null, lastCommitAt: null, lastActiveAt: null, unpushed: [], added: null, removed: null, dirtySince: null, checkedAt: 1
+  merged: null, operation: null, agent: null, files: [], moreFiles: 0, error: null, errorCode: null, lastCommitAt: null, lastActiveAt: null, unpushed: [], added: null, removed: null, dirtySince: null, sensitive: [], sensitiveCount: 0, sensitiveSecrets: 0, sensitiveTracked: 0, checkedAt: 1
 }
 const dirty: Session = {
   ...base, id: 'w1', name: 'checkout', verdict: 'keep', reasons: ['3 uncommitted', '2 unpushed'], uncommitted: 3, ahead: 2,
@@ -381,4 +381,88 @@ t('worker errors are shown in the panel language, unknown texts as they are', as
   assert.ok(v.find({ text: 'Dieser Worktree hat noch offene Arbeit und lässt sich nicht ausblenden' }))
   await v.press(v.findAll({ text: 'Öffnen' })[0])
   assert.ok(v.find({ text: 'odd <b>text</b>' }))
+})
+
+// Files that must not be committed
+
+const leaky: Session = {
+  ...base, id: 'w9', name: 'api', verdict: 'keep', reasons: ['1 sensitive file not ignored', '1 secret in repo'], untracked: 1, files: [{ state: '??', path: '.env' }],
+  sensitive: [
+    { path: 'deploy/prod.pem', kind: 'secret', tracked: true, rule: '*.pem' },
+    { path: '.env', kind: 'secret', tracked: false, rule: '.env' },
+    { path: 'node_modules/', kind: 'junk', tracked: false, rule: 'node_modules/' }
+  ],
+  sensitiveCount: 5, sensitiveSecrets: 2, sensitiveTracked: 1
+}
+async function openLeaky(language: Config['language']) {
+  const host = mockHost({ requests: { 'sessions.get': state([leaky, safe]), 'sessions.refresh': state([leaky, safe]), 'config.get': { ...cfg, language }, 'ui.locale': { ok: true } } })
+  const v = await mount(panel, { host, locale: 'en-US' })
+  views.push(v)
+  return v
+}
+
+t('a card with a secret shows red chips and the Do not commit block', async () => {
+  const v = await openLeaky('en')
+  assert.ok(v.find({ text: '1 sensitive file' }))
+  assert.ok(v.find({ text: '1 secret in repo' }))
+  assert.ok(v.find({ text: 'junk files' }))
+  // no uncommitted files: the worktree is in Keep open
+  assert.ok(v.find({ text: 'Keep open' }))
+  await v.toggle({ label: /Files/ })
+  assert.ok(v.find({ text: 'Do not commit' }))
+  assert.ok(v.find({ text: 'deploy/prod.pem (already tracked)' }))
+  assert.ok(v.find({ text: '.env (not ignored)' }))
+  assert.ok(v.find({ text: 'node_modules/ (not ignored)' }))
+  assert.ok(v.find({ text: '…and 2 more' }))
+  assert.deepEqual(v.errors, [])
+})
+
+t('the Do not commit block in German and Spanish', async () => {
+  const de = await openLeaky('de')
+  assert.ok(de.find({ text: '1 sensible Datei' }) && de.find({ text: '1 Geheimnis im Repo' }) && de.find({ text: 'Datenmüll' }))
+  assert.ok(de.find({ text: 'Offen lassen' }))
+  await de.toggle({ label: /Dateien/ })
+  assert.ok(de.find({ text: 'Nicht committen' }))
+  assert.ok(de.find({ text: 'deploy/prod.pem (schon versioniert)' }) && de.find({ text: '.env (nicht ignoriert)' }))
+  assert.ok(de.find({ text: '…und 2 weitere' }))
+  await de.unmount()
+  const es = await openLeaky('es')
+  assert.ok(es.find({ text: '1 archivo sensible' }) && es.find({ text: '1 secreto en el repo' }) && es.find({ text: 'archivos basura' }))
+  await es.toggle({ label: /Archivos/ })
+  assert.ok(es.find({ text: 'No hacer commit' }))
+  assert.ok(es.find({ text: 'deploy/prod.pem (ya versionado)' }) && es.find({ text: '.env (no ignorado)' }))
+  assert.ok(es.find({ text: '…y 2 más' }))
+})
+
+t('a card with uncommitted files and a secret is in Uncommitted files; Details opens without changed files', async () => {
+  const both: Session = { ...leaky, uncommitted: 2, files: [] }
+  const onlyTracked: Session = { ...base, id: 'w8', name: 'keys', verdict: 'keep', sensitive: [{ path: 'id_rsa', kind: 'secret', tracked: true, rule: 'id_rsa' }], sensitiveCount: 1, sensitiveSecrets: 1, sensitiveTracked: 1 }
+  const host = mockHost({ requests: { 'sessions.get': state([both, onlyTracked]), 'sessions.refresh': state([both, onlyTracked]), 'config.get': cfg } })
+  const v = await open(host)
+  assert.ok(v.find({ text: 'Uncommitted files' }))
+  assert.ok(v.find({ text: 'Keep open' }))
+  for (const d of v.findAll({ type: 'Collapsible', label: 'Details' })) await v.toggle(d)
+  assert.ok(v.find({ text: 'id_rsa (already tracked)' }))
+})
+
+t('the sensitive warning switch is in the settings and saves', async () => {
+  const sent: unknown[] = []
+  const host = mockHost({
+    requests: {
+      'sessions.get': state([safe]),
+      'sessions.refresh': state([safe]),
+      'config.get': cfg,
+      'config.set': (input) => {
+        sent.push(input)
+        return { ...cfg, ...input }
+      }
+    }
+  })
+  const view = await open(host)
+  await view.toggle({ type: 'Collapsible', label: 'Settings' })
+  const label = 'Warn about files that must not be committed (by name only)'
+  assert.equal(view.valueOf({ type: 'Switch', label }), true)
+  await view.toggle({ type: 'Switch', label })
+  assert.deepEqual(sent, [{ warnSensitive: false }])
+  assert.equal(view.valueOf({ type: 'Switch', label }), false)
 })
