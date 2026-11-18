@@ -25,6 +25,10 @@ After a day with several agents you have a dozen worktrees open and no idea whic
 
 ![Current session on top, then worktrees grouped by status with colored chips](assets/screenshot-overview.png)
 
+**Open a card.** Changed files in plain words, and the commits that exist only on your machine.
+
+![One worktree card opened: chips, lines changed, changed files and unpushed commits](assets/screenshot-details.png)
+
 **One project at a time.** The same list grouped by project.
 
 ![The worktrees grouped by project](assets/screenshot-projects.png)
@@ -34,6 +38,8 @@ After a day with several agents you have a dozen worktrees open and no idea whic
 ![The panel in Orca's light theme](assets/screenshot-light.png)
 
 ## The verdicts
+
+![The four verdicts: keep open, check first, can close and not checked](assets/screenshot-verdicts.png)
 
 | Verdict | Meaning |
 |---|---|
@@ -64,6 +70,8 @@ From source: `git clone https://github.com/brodesigns/orca-session-check`, then 
 ## Privacy and access
 
 Orca labels every plugin with a worker "Full access". Here is what this one does with it:
+
+![Why Full access? Read-only, repositories are untrusted, no network, almost nothing stored](assets/screenshot-access.png)
 
 - reads your workspace list (names, branches, paths, agent status) and gets notified when workspaces or agents change
 - uses the **workspace write** permission only for one call, `workspace.open`, when you press **Open**. Orca's wording for that permission is broader (it also covers renaming workspaces and similar), the plugin calls nothing else.

@@ -86,6 +86,16 @@
       "caption": "Which worktrees still have open work"
     },
     {
+      "path": "assets/screenshot-details.png",
+      "alt": "One worktree card opened: chips, lines changed, the changed files in plain words and the unpushed commits",
+      "caption": "Open a card, see what is inside"
+    },
+    {
+      "path": "assets/screenshot-verdicts.png",
+      "alt": "The four verdicts: keep open, check first, can close and not checked, each with example chips",
+      "caption": "Know what you can close"
+    },
+    {
       "path": "assets/screenshot-projects.png",
       "alt": "The same list grouped by project",
       "caption": "Group by project"
@@ -94,6 +104,11 @@
       "path": "assets/screenshot-light.png",
       "alt": "The panel in Orca's light theme",
       "caption": "Works in the light theme"
+    },
+    {
+      "path": "assets/screenshot-access.png",
+      "alt": "Why Full access: read-only, repositories are untrusted, no network, almost nothing stored",
+      "caption": "What Full access means here"
     }
   ]
 }
