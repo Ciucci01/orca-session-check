@@ -2,7 +2,7 @@
   "manifestVersion": 2,
   "id": "session-check",
   "name": "Session Check",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "See at a glance which of your Orca worktrees still have uncommitted files, unpushed commits, stashes or a running agent, and which sessions are safe to close. Read-only, no network.",
   "engines": {
     "orca": ">=1.4.259"
