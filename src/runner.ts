@@ -40,7 +40,10 @@ export function gitEnv(source: Record<string, string | undefined> = process.env)
     GIT_TERMINAL_PROMPT: '0',
     LC_ALL: 'C',
     // git 2.44 and newer: never fetch missing objects by itself (older ones rely on the protocol flags)
-    GIT_NO_LAZY_FETCH: '1'
+    GIT_NO_LAZY_FETCH: '1',
+    // git 2.40 and newer: read attributes from the empty tree, not from the worktree or the index. A checkout
+    // during a scan could otherwise bring a .gitattributes that names a filter the override list did not know.
+    GIT_ATTR_SOURCE: '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
   }
   for (const key of ['PATH', 'HOME', 'USER', 'LOGNAME', 'TMPDIR', 'SystemRoot']) {
     const v = source[key]
@@ -119,7 +122,9 @@ export async function scanRepo(path: string, baseSetting: string): Promise<RepoS
     if (status.code !== 0) return { error: await failureText(path, o) }
     const info = parseStatus(status.stdout)
 
-    const stash = parseStash((await runGit(path, o, ['stash', 'list', '--format=%gs'])).stdout)
+    const stashList = await runGit(path, o, ['stash', 'list', '--format=%gs'])
+    if (stashList.code !== 0) return { error: 'git stash list failed' }
+    const stash = parseStash(stashList.stdout)
     const dir = (await runGit(path, o, ['rev-parse', '--absolute-git-dir'])).stdout.trim()
     const operation = dir.startsWith('/') ? operationFrom(await readdir(dir).catch(() => [])) : null
 
@@ -158,7 +163,7 @@ export async function scanRepo(path: string, baseSetting: string): Promise<RepoS
       added,
       removed,
       dirtySince,
-      submodules: await stat(join(path, '.gitmodules')).then(() => true, () => false),
+      submodules: await hasSubmodules(path, o),
       merged
     }
   } catch (e) {
@@ -168,6 +173,21 @@ export async function scanRepo(path: string, baseSetting: string): Promise<RepoS
       if (e.reason === 'too-large') return { error: 'git output too large' }
     }
     return { error: 'git failed' }
+  }
+}
+
+/** A submodule is a gitlink (mode 160000) in the index or a .gitmodules file; a repository too big to list counts as having one */
+async function hasSubmodules(path: string, o: readonly string[]): Promise<boolean> {
+  const top = (await runGit(path, o, ['rev-parse', '--show-toplevel'])).stdout.trim()
+  const root = top.startsWith('/') ? top : path
+  if (await stat(join(root, '.gitmodules')).then(() => true, () => false)) return true
+  try {
+    const files = await runGit(path, o, ['ls-files', '--stage', '-z'])
+    if (files.code !== 0) return true
+    return files.stdout.split('\0').some((entry) => entry.startsWith('160000 '))
+  } catch (e) {
+    if (e instanceof GitError && e.reason === 'too-large') return true
+    throw e
   }
 }
 

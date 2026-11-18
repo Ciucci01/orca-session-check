@@ -49,6 +49,8 @@ export default function activate(orca: OrcaWorkerApi): void {
   let lastEventScan = 0
   let gapTimer: ReturnType<typeof setTimeout> | undefined
   let inFlight: Promise<SessionsState> | null = null
+  // A running targeted scan did not read every repository: a full refresh must not share it
+  let inFlightTargeted = false
 
   async function getConfig(): Promise<Config> {
     const out = { ...CONFIG_DEFAULTS }
@@ -128,6 +130,7 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   function publish(force = false): SessionsState {
     const state = snapshot()
+    if (stopped) return state
     // checkedAt changes with every scan, it must not count as a change
     const signature = JSON.stringify(state.sessions.map((s) => ({ ...s, checkedAt: 0 })))
     if (force || signature !== lastSignature) {
@@ -145,8 +148,9 @@ export default function activate(orca: OrcaWorkerApi): void {
     statusTruncated = res.statusTruncated === true
     const ids = new Set(rows.map((r) => r.id))
     for (const id of [...checked.keys()]) if (!ids.has(id)) checked.delete(id)
+    // A cut or empty list says nothing about the workspaces that are missing from it: keep what is hidden
     let pruned = false
-    for (const id of [...hidden.keys()]) if (!ids.has(id)) pruned = hidden.delete(id) || pruned
+    if (!truncated && rows.length > 0) for (const id of [...hidden.keys()]) if (!ids.has(id)) pruned = hidden.delete(id) || pruned
     if (pruned) await saveHidden()
   }
 
@@ -164,7 +168,7 @@ export default function activate(orca: OrcaWorkerApi): void {
   async function scan(only?: ReadonlySet<string>): Promise<SessionsState> {
     // A panel refresh shares the running scan. A targeted scan waits for it and then runs, so its workspaces are not lost.
     while (inFlight) {
-      if (!only) return inFlight
+      if (!only && !inFlightTargeted) return inFlight
       await inFlight.catch(() => undefined)
     }
     const run = (async () => {
@@ -184,6 +188,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       }
     })()
     inFlight = run
+    inFlightTargeted = only !== undefined
     return await run
   }
 
@@ -244,8 +249,9 @@ export default function activate(orca: OrcaWorkerApi): void {
   const ready = (async () => {
     const saved = await orca.storage.get('hidden').catch(() => null)
     // An older list of ids counts as hidden while safe, so any change brings the worktree back
-    if (Array.isArray(saved)) for (const id of saved) if (typeof id === 'string') hidden.set(id, 'safe')
-    else if (saved && typeof saved === 'object') {
+    if (Array.isArray(saved)) {
+      for (const id of saved) if (typeof id === 'string') hidden.set(id, 'safe')
+    } else if (saved && typeof saved === 'object') {
       for (const [id, v] of Object.entries(saved)) if (v === 'safe' || v === 'check' || v === 'unknown' || v === 'keep') hidden.set(id, v)
     }
     await getConfig().catch(() => CONFIG_DEFAULTS)

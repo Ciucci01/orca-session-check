@@ -43,8 +43,8 @@ After a day with several agents you have a dozen worktrees open and no idea whic
 
 | Verdict | Meaning |
 |---|---|
-| **Keep open** | uncommitted or conflicted files, unpushed commits, an agent working or waiting for you, or a merge, rebase, cherry-pick, revert or bisect in progress |
-| **Check first** | only untracked files, stash entries, a branch without upstream that has commits outside the base branch, a deleted upstream, a detached HEAD, or submodules (their changes are not looked at) |
+| **Keep open** | uncommitted or conflicted files, unpushed commits, an agent working or waiting for you, a detached HEAD with commits no base branch holds, or a merge, rebase, cherry-pick, revert or bisect in progress |
+| **Check first** | only untracked files, stash entries, a branch without upstream that has commits outside the base branch, a deleted upstream, a detached HEAD without own commits, or submodules (their changes are not looked at) |
 | **Can close** | clean, nothing unpushed (or every commit is already in the base branch), and no active agent |
 | **Not checked** | folder workspace, remote (SSH) workspace, partial clone, not a git repository, git missing or failing. The reason is shown, nothing is guessed |
 
@@ -52,7 +52,7 @@ When in doubt it is stricter: a worktree is never shown as closable because some
 
 ## Install
 
-Requires Orca 1.4.259 or newer and `git` in your `PATH`.
+Requires Orca 1.4.259 or newer and `git` in your `PATH`. Tested with git 2.42 and newer.
 
 1. In Orca, open **Settings → Plugins**.
 2. Add the marketplace `https://github.com/stablyai/orca-community-plugins.git` (ref `main`).
@@ -76,7 +76,7 @@ Orca labels every plugin with a worker "Full access". Here is what this one does
 - reads your workspace list (names, branches, paths, agent status) and gets notified when workspaces or agents change
 - uses the **workspace write** permission only for one call, `workspace.open`, when you press **Open**. Orca's wording for that permission is broader (it also covers renaming workspaces and similar), the plugin calls nothing else.
 - runs the system tool `git` in your local worktrees with fixed arguments, read-only (`status`, `stash list`, `log`, `diff --shortstat`, `rev-parse`, `symbolic-ref`, `merge-base`, `config` to list names). It never uses a shell, never fetches or pushes, and passes only a short list of environment variables (`PATH`, `HOME`, ...).
-- treats every repository as untrusted. A repository's own config can make git start programs, so the plugin switches off `core.fsmonitor`, hooks, `log.showSignature` (gpg) and every network protocol (a partial clone would fetch missing objects on its own), sets `GIT_NO_LAZY_FETCH`, skips partial clones, and empties every `filter.*.clean`, `smudge` and `process` command the repository defines. Tests with malicious repositories prove that these programs do not run, and that they do run when git is called without this protection. An independent security review found three of these cases; they are fixed and tested.
+- treats every repository as untrusted. A repository's own config can make git start programs, so the plugin switches off `core.fsmonitor`, hooks, `log.showSignature` (gpg) and every network protocol (a partial clone would fetch missing objects on its own), sets `GIT_NO_LAZY_FETCH`, skips partial clones, ignores the worktree's `.gitattributes`, and empties every `filter.*.clean`, `smudge` and `process` command the repository defines. Tests with malicious repositories prove that these programs do not run, and that they do run when git is called without this protection. Two independent security reviews found issues, all fixed and tested.
 - stops git after 8 seconds or 2 MB of output, runs at most 4 repositories at the same time and checks at most 100 workspaces
 - makes no network requests and collects nothing
 - reads the time of the last commit and the first unpushed commit subjects (`git log`), the size of your changes (`git diff --shortstat`, with textconv and external diff switched off) and the modification time of changed files (`lstat`, no symlinks followed, no contents)
@@ -85,7 +85,7 @@ Orca labels every plugin with a worker "Full access". Here is what this one does
 ## Good to know
 
 - Unpushed and behind counts use the **last known** upstream. Nothing is fetched, so run `git fetch` yourself for fresh numbers.
-- "Already in the base branch" compares with `origin/HEAD` (or `origin/main`, `origin/master`, or the base branch you set).
+- "Already in the base branch" compares with the remote-tracking branch `origin/HEAD` (or `origin/main`, `origin/master`, or the base branch you set). A local branch never counts as the base.
 - Git shares one stash between all worktrees, so stash entries are counted per branch.
 - Filters such as Git LFS are not run, so LFS files can show up as modified when only their time stamp changed.
 - Workspaces on other hosts (SSH) and partial clones are listed as "not checked".

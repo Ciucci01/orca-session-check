@@ -18,6 +18,8 @@ export const GIT_FLAGS: readonly string[] = [
   '-c', 'core.fsmonitor=false',
   '-c', 'core.hooksPath=/dev/null',
   '-c', 'core.untrackedCache=false',
+  // .gitattributes of the worktree must not pick a filter (see GIT_ATTR_SOURCE in gitEnv)
+  '-c', 'core.attributesFile=/dev/null',
   '-c', 'status.showUntrackedFiles=normal',
   // A signature check starts gpg.program of the repository (log, stash list)
   '-c', 'log.showSignature=false',
@@ -268,13 +270,15 @@ export function operationFrom(entries: readonly string[]): string | null {
 /**
  * Base branch candidates as full ref names, the first that exists wins. A short name like
  * `origin/main` can also be a local branch or a tag, and git prefers those: a branch named
- * "origin/main" on HEAD would make everything look merged. So only refs/remotes and refs/heads.
+ * "origin/main" on HEAD would make everything look merged. So only full refs/remotes names.
  */
 export function baseCandidates(setting: string, originHead: string | null): string[] {
   const out: string[] = []
+  // Only remote-tracking refs: a local branch moves with your own commits (a local main that is not pushed
+  // would make everything look merged)
   if (isSafeRef(setting)) {
-    if (setting.startsWith('refs/')) out.push(setting)
-    else out.push(`refs/remotes/${setting}`, `refs/heads/${setting}`)
+    if (setting.startsWith('refs/remotes/')) out.push(setting)
+    else if (!setting.startsWith('refs/')) out.push(`refs/remotes/${setting}`)
   }
   if (originHead && /^refs\/remotes\/[A-Za-z0-9._/-]+$/.test(originHead) && !originHead.includes('..')) out.push(originHead)
   out.push('refs/remotes/origin/main', 'refs/remotes/origin/master')
@@ -320,7 +324,9 @@ export function verdict(i: VerdictInput): { verdict: Verdict; reasons: string[] 
     check.push(i.merged === false ? `${what}, has commits outside the base branch` : `${what}, base branch unknown`)
   }
   if (i.submodules) check.push('submodules not checked')
-  if (i.detached && i.merged !== true) check.push('detached HEAD')
+  // Commits on a detached HEAD that no base branch holds are reachable only through the reflog
+  if (i.detached && i.merged === false) keep.push('detached HEAD with commits outside the base branch')
+  else if (i.detached && i.merged !== true) check.push('detached HEAD')
   if (i.agentUnknown) check.push('agent status unknown')
   if (keep.length) return { verdict: 'keep', reasons: [...keep, ...check] }
   if (check.length) return { verdict: 'check', reasons: check }

@@ -101,10 +101,13 @@ test('operation markers', () => {
 test('base branch candidates: setting first, then origin/HEAD, then the usual names', () => {
   const main = ['refs/remotes/origin/main', 'refs/remotes/origin/master']
   assert.deepEqual(baseCandidates('', null), main)
-  assert.deepEqual(baseCandidates('origin/dev', 'refs/remotes/origin/trunk'), ['refs/remotes/origin/dev', 'refs/heads/origin/dev', 'refs/remotes/origin/trunk', ...main])
+  assert.deepEqual(baseCandidates('origin/dev', 'refs/remotes/origin/trunk'), ['refs/remotes/origin/dev', 'refs/remotes/origin/trunk', ...main])
   assert.deepEqual(baseCandidates('refs/remotes/up/dev', null), ['refs/remotes/up/dev', ...main])
   // full names only: "HEAD" or a tag can never become the base
-  assert.deepEqual(baseCandidates('HEAD', null), ['refs/remotes/HEAD', 'refs/heads/HEAD', ...main])
+  assert.deepEqual(baseCandidates('HEAD', null), ['refs/remotes/HEAD', ...main])
+  // a local branch is never a base: it moves with your own unpushed commits
+  assert.deepEqual(baseCandidates('refs/heads/main', null), main)
+  assert.deepEqual(baseCandidates('refs/tags/v1', null), main)
   // unsafe values are dropped, never passed to git
   assert.deepEqual(baseCandidates('--upload-pack=x', 'refs/heads/../x'), main)
 })
@@ -161,7 +164,8 @@ const matrix: [string, Partial<VerdictInput>, string, string][] = [
   ['no upstream, has own commits', { upstream: null, merged: false }, 'check', 'no upstream'],
   ['no upstream, base unknown', { upstream: null, merged: null }, 'check', 'base branch unknown'],
   ['no upstream but merged', { upstream: null, merged: true }, 'safe', 'clean'],
-  ['detached HEAD', { detached: true, upstream: null, merged: false }, 'check', 'detached'],
+  ['detached HEAD with commits outside the base branch', { detached: true, upstream: null, merged: false }, 'keep', 'detached HEAD with commits'],
+  ['detached HEAD, base branch unknown', { detached: true, upstream: null, merged: null }, 'check', 'detached'],
   ['detached HEAD that is merged', { detached: true, upstream: null, merged: true }, 'safe', 'clean'],
   ['agent status unknown', { agentUnknown: true }, 'check', 'agent status unknown'],
   ['uncommitted beats untracked', { uncommitted: 1, untracked: 5 }, 'keep', '1 uncommitted']

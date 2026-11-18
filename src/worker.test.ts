@@ -54,6 +54,11 @@ async function withRemote(): Promise<{ dir: string }> {
   git(dir, 'remote', 'set-head', 'origin', 'main')
   return { dir }
 }
+/** Waits until the check is true (up to 5 s) instead of sleeping a fixed time: scans take as long as git takes */
+async function until(check: () => boolean): Promise<void> {
+  const end = Date.now() + 5000
+  while (!check() && Date.now() < end) await new Promise((r) => setTimeout(r, 25))
+}
 type Ws = { id: string; kind: 'worktree' | 'folder'; name: string; project?: string; path: string; branch: string | null; hostId: string | null; status?: { state: 'working' | 'permission' | 'done' | 'active' | 'inactive'; unread: boolean; terminalCount: number; lastActivityAt: number | null } }
 const ws = (id: string, path: string, extra: Partial<Ws> = {}): Ws => ({ id, kind: 'worktree', name: id, project: 'acme-shop', path, branch: 'feat', hostId: null, ...extra })
 const list = (workspaces: Ws[], extra: object = {}) => ({ workspaces, truncated: false, ...extra })
@@ -167,9 +172,14 @@ t('events rescan only while the panel is open, and only the workspace concerned'
   assert.equal(host.callsOf('workspace.list').length, 1)
   await writeFile(join(a, 'new.txt'), 'x\n')
   await worker.emit('agent.status.changed', event('w1'))
-  await new Promise((r) => setTimeout(r, 200))
+  await until(() => host.callsOf('workspace.list').length >= 2)
   assert.equal(host.callsOf('workspace.list').length, 2)
-  const s = (await worker.request('sessions.get')) as SessionsState
+  // the call count rises when the scan starts: wait for its result, not for its start
+  let s = (await worker.request('sessions.get')) as SessionsState
+  for (let i = 0; i < 100 && s.sessions.find((x) => x.id === 'w1')?.untracked !== 1; i++) {
+    await new Promise((r) => setTimeout(r, 50))
+    s = (await worker.request('sessions.get')) as SessionsState
+  }
   assert.equal(s.sessions.find((x) => x.id === 'w1')?.untracked, 1)
 })
 
@@ -364,7 +374,8 @@ t('workspace.created and workspace.removed rescan while the panel is open', asyn
   await worker.request('sessions.get')
   host.respond('workspace.list', list([ws('w1', a), ws('w2', b)]))
   await worker.emit('workspace.created', { workspaceId: 'w2', workspaceListId: 'w2', kind: 'worktree', path: b, branch: 'feat' })
-  await new Promise((r) => setTimeout(r, 300))
+  await until(() => host.callsOf('workspace.list').length >= 2)
+  await new Promise((r) => setTimeout(r, 100))
   assert.equal(((await worker.request('sessions.get')) as SessionsState).sessions.length, 2)
   host.respond('workspace.list', list([ws('w1', a)]))
   await worker.emit('workspace.removed', { workspaceId: 'w2', workspaceListId: 'w2', kind: 'worktree', path: b })
@@ -391,4 +402,39 @@ t('a storm of events makes scans with a pause, and a running scan does not swall
   } finally {
     main.TUNING.eventGapMs = 2000
   }
+})
+
+t('the hidden list in the new format is read after a restart', async () => {
+  const { dir } = await withRemote()
+  const host = mockHost({ storage: { hidden: { w1: 'check' } }, results: { 'workspace.list': list([ws('w1', dir, { branch: 'main' })]) } })
+  const worker = await mount(host)
+  assert.equal(((await worker.request('sessions.get')) as SessionsState).sessions[0].hidden, true)
+})
+
+t('hidden worktrees are not forgotten when the list is empty or cut', async () => {
+  const dir = await repo()
+  const host = mockHost({ storage: { hidden: { w1: 'check' } }, results: { 'workspace.list': list([]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  assert.deepEqual(host.data().storage.hidden, { w1: 'check' })
+  host.respond('workspace.list', list([ws('w2', dir)], { truncated: true }))
+  await worker.request('sessions.refresh')
+  assert.deepEqual(host.data().storage.hidden, { w1: 'check' })
+  // a full list without w1 forgets it
+  host.respond('workspace.list', list([ws('w2', dir)]))
+  await worker.request('sessions.refresh')
+  assert.deepEqual(host.data().storage.hidden, {})
+})
+
+t('a refresh from the panel waits for a running targeted scan and reads every repository', async () => {
+  const a = await repo()
+  const b = await repo()
+  const host = mockHost({ results: { 'workspace.list': list([ws('w1', a), ws('w2', b)]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  await writeFile(join(b, 'late.txt'), 'x\n')
+  const event = { workspaceId: null, workspaceListId: 'w1', paneKey: 'p', state: 'working' as const, receivedAt: 1 }
+  await worker.emit('agent.status.changed', event)
+  const s = (await worker.request('sessions.refresh')) as SessionsState
+  assert.equal(s.sessions.find((x) => x.id === 'w2')?.untracked, 1)
 })

@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, rm, symlink, writeFile, access } from 'node:fs/p
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { assert, test } from 'orca/testing'
+import { STATUS_ARGS } from './git'
 import { GitError, gitEnv, mapLimit, runGit, scanRepo, type RepoState } from './runner'
 
 // Real temporary repositories. Everything is removed again, even when an assertion fails.
@@ -364,7 +365,7 @@ t('the scan does not write: no index.lock, index unchanged', async () => {
 
 t('the environment passed to git is a short list', async () => {
   const env = gitEnv({ PATH: '/bin', HOME: '/h', GIT_EXTERNAL_DIFF: 'x', GIT_PAGER: 'x', GIT_DIR: '/x', GIT_SSH_COMMAND: 'x', GIT_CONFIG_COUNT: '1', EDITOR: 'x', SECRET_TOKEN: 's' })
-  assert.deepEqual(Object.keys(env).sort(), ['GIT_NO_LAZY_FETCH', 'GIT_OPTIONAL_LOCKS', 'GIT_TERMINAL_PROMPT', 'HOME', 'LC_ALL', 'PATH'])
+  assert.deepEqual(Object.keys(env).sort(), ['GIT_ATTR_SOURCE', 'GIT_NO_LAZY_FETCH', 'GIT_OPTIONAL_LOCKS', 'GIT_TERMINAL_PROMPT', 'HOME', 'LC_ALL', 'PATH'])
   assert.equal(env.GIT_OPTIONAL_LOCKS, '0')
   assert.equal(env.GIT_TERMINAL_PROMPT, '0')
 })
@@ -597,4 +598,63 @@ t('the age is read from the top of the worktree when the workspace is a subfolde
   await writeFile(join(dir, 'sub', 'z.txt'), 'changed\n')
   const s = ok(await scanRepo(join(dir, 'sub'), ''))
   assert.ok(s.dirtySince !== null)
+})
+
+// --- Findings of the second security review ----------------------------------------------
+
+t('a base branch setting never turns a local branch into the base (unpushed commits on main are not merged)', async () => {
+  const { dir } = await withRemote()
+  await writeFile(join(dir, 'l.txt'), 'l\n')
+  git(dir, 'add', '.')
+  git(dir, 'commit', '-q', '-m', 'local only')
+  for (const setting of ['main', 'refs/heads/main', 'heads/main']) {
+    assert.equal(ok(await scanRepo(dir, setting)).merged, false, setting)
+  }
+})
+
+t('a .gitattributes in the worktree cannot pick a filter even without the override list (a checkout during a scan)', async () => {
+  const { dir, m } = await filterRepo('tree', 'clean')
+  // status without any filter override: only the attribute source and core.attributesFile keep the filter from running
+  await runGit(dir, [], STATUS_ARGS)
+  assert.equal(await m.ran(), false, 'the worktree .gitattributes picked the filter')
+  // control: plain git runs it
+  plainStatus(dir)
+  assert.equal(await m.ran(), true, 'control')
+})
+
+t('a nested repository committed as a gitlink without .gitmodules is reported', async () => {
+  const dir = await repo()
+  const inner = join(dir, 'vendor')
+  await mkdir(inner)
+  git(inner, 'init', '-q', '-b', 'main')
+  await writeFile(join(inner, 'x.txt'), 'x\n')
+  git(inner, 'add', '.')
+  git(inner, 'commit', '-q', '-m', 'inner')
+  git(dir, 'add', 'vendor')
+  git(dir, 'commit', '-q', '-m', 'gitlink')
+  await writeFile(join(inner, 'x.txt'), 'dirty inside\n')
+  const s = ok(await scanRepo(dir, ''))
+  assert.equal(s.submodules, true)
+  assert.equal(ok(await scanRepo(await repo(), '')).submodules, false)
+})
+
+t('.gitmodules is looked for at the top of the worktree when the workspace is a subfolder', async () => {
+  const dir = await repo()
+  await mkdir(join(dir, 'sub'))
+  await writeFile(join(dir, 'sub', 'z.txt'), 'z\n')
+  await writeFile(join(dir, '.gitmodules'), '')
+  git(dir, 'add', '.')
+  git(dir, 'commit', '-q', '-m', 'z')
+  assert.equal(ok(await scanRepo(join(dir, 'sub'), '')).submodules, true)
+})
+
+t('a detached HEAD whose commits no base branch holds is a worktree to keep', async () => {
+  const { dir } = await withRemote()
+  git(dir, 'checkout', '-q', '--detach')
+  await writeFile(join(dir, 'd.txt'), 'd\n')
+  git(dir, 'add', '.')
+  git(dir, 'commit', '-q', '-m', 'only on the detached head')
+  const s = ok(await scanRepo(dir, ''))
+  assert.equal(s.detached, true)
+  assert.equal(s.merged, false)
 })
