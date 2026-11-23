@@ -1,6 +1,6 @@
 // Short labels for a row of the panel, derived from the numbers of a session (pure, no panel code)
 import { errorText, tr, type Lang, type MsgKey } from './i18n'
-import type { Session } from './protocol'
+import type { PullRequest, Session } from './protocol'
 
 /** Red is kept for what is really wrong (conflict, merge or rebase running, a secret). Open work is calm: blue and amber. */
 export type ChipTone = 'neutral' | 'accent' | 'success' | 'warning' | 'danger'
@@ -57,7 +57,16 @@ export function chips(s: Session, lang: Lang = 'en'): Chip[] {
   if (s.error) out.push({ text: s.errorCode ? tr(lang, s.errorCode) : errorText(lang, s.error), tone: 'neutral' })
   else if (s.reasons.includes('agent status unknown')) add('chip.agentUnknown', 'neutral')
   if (out.length === 0) add('chip.clean', 'success')
+  // After "clean": a pull request says nothing about the files, a clean worktree keeps its green chip
+  if (s.pr) add(PR_CHIP[s.pr.state][0], PR_CHIP[s.pr.state][1], { n: s.pr.number })
   return out
+}
+
+const PR_CHIP: Record<PullRequest['state'], [MsgKey, ChipTone]> = {
+  open: ['chip.prOpen', 'accent'],
+  draft: ['chip.prDraft', 'neutral'],
+  merged: ['chip.prMerged', 'success'],
+  closed: ['chip.prClosed', 'neutral']
 }
 
 /** Git's two-letter code (X = index, Y = worktree) as a word: "??" is a new file, ".M" an edited one */

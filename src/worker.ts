@@ -5,7 +5,8 @@ import { cleanPath, compareSessions, isSafePath, verdict as rate, verdictRank } 
 import { mapLimit, MAX_PARALLEL, scanRepo, type RepoFailure, type RepoState } from './runner'
 import { errorKey, languageSetting, resolveLang, tr, type Lang } from './i18n'
 import { agentDoneText, clampBackground, statusBar, type BarItem } from './summary'
-import type { AgentState, Config, Session, SessionsState, Verdict } from './protocol'
+import { lookupPullRequest } from './gh'
+import type { AgentState, Config, PullRequest, Session, SessionsState, Verdict } from './protocol'
 
 const MAX_WORKSPACES = 100
 const MAX_HIDDEN = 500
@@ -26,13 +27,15 @@ export const TUNING = {
   /** Length of one configured second (background refresh) */
   secondMs: 1000,
   /** At most one notification per worktree in this time */
-  notifyGapMs: 10 * 60_000
+  notifyGapMs: 10 * 60_000,
+  /** A pull request is asked for again after this time (or at once when the branch changed) */
+  prTtlMs: 5 * 60_000
 }
 /** The system locale, the worker's last guess at the language when the panel never said one; tests replace it */
 export const LOCALE = { system: (): string => Intl.DateTimeFormat().resolvedOptions().locale }
 // Orca's UI locale as BCP-47 ("de-DE", "es-419")
 const LOCALE_PATTERN = /^[A-Za-z]{2,8}(?:[-_][A-Za-z0-9]{1,8}){0,6}$/
-const CONFIG_DEFAULTS: Config = { baseBranch: '', intervalSeconds: 30, notifyOnAgentDone: true, backgroundSeconds: 120, language: 'auto', warnSensitive: true }
+const CONFIG_DEFAULTS: Config = { baseBranch: '', intervalSeconds: 30, notifyOnAgentDone: true, backgroundSeconds: 120, language: 'auto', warnSensitive: true, showPullRequests: false }
 type EventState = PluginEvents['agent.status.changed']['state']
 
 type Row = {
@@ -84,6 +87,10 @@ export default function activate(orca: OrcaWorkerApi): void {
   let language = CONFIG_DEFAULTS.language
   // Off: no file is reported as sensitive and the verdict does not look at names
   let warnSensitive = CONFIG_DEFAULTS.warnSensitive
+  // Pull requests per workspace and the branch they belong to; looked up only while the setting is on
+  let showPullRequests = CONFIG_DEFAULTS.showPullRequests
+  const prs = new Map<string, { at: number; branch: string; pr: PullRequest | null }>()
+  let prLookup: Promise<void> | null = null
   let uiLocale: string | null = null
   const lang = (): Lang => {
     if (uiLocale !== null) return resolveLang(language, uiLocale)
@@ -109,15 +116,22 @@ export default function activate(orca: OrcaWorkerApi): void {
     out.language = languageSetting(await orca.settings.get('language'))
     const warn = await orca.settings.get('warnSensitive')
     if (typeof warn === 'boolean') out.warnSensitive = warn
+    const showPrs = await orca.settings.get('showPullRequests')
+    if (typeof showPrs === 'boolean') out.showPullRequests = showPrs
     backgroundSeconds = out.backgroundSeconds
     language = out.language
     warnSensitive = out.warnSensitive
+    showPullRequests = out.showPullRequests
     return out
   }
 
   const isLocalWorktree = (r: Row) => r.kind === 'worktree' && (r.hostId === null || r.hostId === LOCAL_HOST) && isSafePath(r.path)
 
   const noSensitive = { sensitive: [], sensitiveCount: 0, sensitiveSecrets: 0, sensitiveTracked: 0 }
+  const prOf = (id: string, branch: string | null): PullRequest | null => {
+    const p = prs.get(id)
+    return showPullRequests && branch !== null && p?.branch === branch ? p.pr : null
+  }
 
   function sessionOf(r: Row): Session {
     const c = checked.get(r.id)
@@ -134,7 +148,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       lastActiveAt: r.status?.lastActivityAt ?? null,
       checkedAt: c?.at ?? 0
     }
-    const empty = { uncommitted: 0, staged: 0, untracked: 0, conflicts: 0, ahead: 0, behind: 0, upstream: null, upstreamGone: false, submodules: false, stash: 0, stashTotal: 0, merged: null, operation: null, files: [], moreFiles: 0, lastCommitAt: null, unpushed: [], added: null, removed: null, dirtySince: null, ...noSensitive }
+    const empty = { uncommitted: 0, staged: 0, untracked: 0, conflicts: 0, ahead: 0, behind: 0, upstream: null, upstreamGone: false, submodules: false, stash: 0, stashTotal: 0, merged: null, pr: null, operation: null, files: [], moreFiles: 0, lastCommitAt: null, unpushed: [], added: null, removed: null, dirtySince: null, ...noSensitive }
     const failed = (error: string): Session => {
       // An agent at work is a reason to keep the session even when git could not be read
       const busy = agent === 'working' || agent === 'permission'
@@ -168,6 +182,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       stash: s.stash,
       stashTotal: s.stashTotal,
       merged: s.merged,
+      pr: prOf(r.id, s.head),
       operation: s.operation,
       files: s.files,
       moreFiles: s.moreFiles,
@@ -258,6 +273,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     statusTruncated = res.statusTruncated === true
     const ids = new Set(rows.map((r) => r.id))
     for (const id of [...checked.keys()]) if (!ids.has(id)) checked.delete(id)
+    for (const id of [...prs.keys()]) if (!ids.has(id)) prs.delete(id)
     // A cut or empty list says nothing about the workspaces that are missing from it: keep what is hidden
     let pruned = false
     if (!truncated && rows.length > 0) for (const id of [...hidden.keys()]) if (!ids.has(id)) pruned = hidden.delete(id) || pruned
@@ -308,6 +324,7 @@ export default function activate(orca: OrcaWorkerApi): void {
         await resurface()
         const state = publish()
         await notifyFinished(cfg)
+        refreshPullRequests()
         return state
       } finally {
         inFlight = null
@@ -316,6 +333,49 @@ export default function activate(orca: OrcaWorkerApi): void {
     inFlight = run
     inFlightTargeted = partial
     return await run
+  }
+
+  /**
+   * Asks gh for the pull requests that are due, after a scan and off its path, so the panel never waits for the network.
+   * Publishes again only when one changed. A failed lookup keeps what was known and never touches the verdict.
+   */
+  function refreshPullRequests(): void {
+    if (!showPullRequests || prLookup || stopped) return
+    prLookup = (async () => {
+      const now = Date.now()
+      const todo: { id: string; path: string; branch: string }[] = []
+      for (const r of rows) {
+        const c = checked.get(r.id)
+        if (!isLocalWorktree(r) || !c || isFailure(c.result) || !c.result.head) continue
+        const p = prs.get(r.id)
+        if (!p || p.branch !== c.result.head || now - p.at >= TUNING.prTtlMs) todo.push({ id: r.id, path: r.path, branch: c.result.head })
+      }
+      const errors = new Set<string>()
+      let changed = false
+      await mapLimit(todo, MAX_PARALLEL, async (t) => {
+        if (stopped) return
+        const res = await lookupPullRequest(t.path, t.branch)
+        const prev = prs.get(t.id)
+        const last = prev?.branch === t.branch ? prev.pr : null
+        if ('error' in res) errors.add(res.error)
+        const pr = 'error' in res ? last : res.pr
+        if (JSON.stringify(pr) !== JSON.stringify(last)) changed = true
+        prs.set(t.id, { at: Date.now(), branch: t.branch, pr })
+      })
+      if (errors.size > 0) orca.log(`pull requests: ${[...errors].join(', ')}`)
+      if (changed && showPullRequests && !stopped) publish()
+    })()
+      .catch((e) => orca.log(`pull requests failed: ${String(e)}`))
+      .finally(() => {
+        prLookup = null
+      })
+  }
+
+  /** The setting switched: the chips appear or go at once, and nothing that was looked up before is shown stale */
+  function togglePullRequests(): void {
+    if (!showPullRequests) prs.clear()
+    if (scannedOnce && !stopped) publish()
+    refreshPullRequests()
   }
 
   /** Event and background rescans: coalesced, one after the other, `null` = every workspace */
@@ -465,11 +525,14 @@ export default function activate(orca: OrcaWorkerApi): void {
     // Only a known value is stored; anything else leaves the setting as it is
     if (typeof input?.language === 'string' && languageSetting(input.language) === input.language) await orca.settings.set('language', input.language)
     if (typeof input?.warnSensitive === 'boolean') await orca.settings.set('warnSensitive', input.warnSensitive)
+    if (typeof input?.showPullRequests === 'boolean') await orca.settings.set('showPullRequests', input.showPullRequests)
     const before = backgroundSeconds
     const warnBefore = warnSensitive
+    const prsBefore = showPullRequests
     const cfg = await getConfig()
     if (cfg.backgroundSeconds !== before) rearmBackground()
     if (cfg.warnSensitive !== warnBefore) await rerate()
+    if (cfg.showPullRequests !== prsBefore) togglePullRequests()
     relabel()
     return cfg
   })
@@ -490,13 +553,15 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   // A change in Orca's Settings takes effect without a restart
   const settingsWatch = orca.settings.onDidChange((change) => {
-    if (change.key !== 'backgroundSeconds' && change.key !== 'language' && change.key !== 'warnSensitive') return
+    if (change.key !== 'backgroundSeconds' && change.key !== 'language' && change.key !== 'warnSensitive' && change.key !== 'showPullRequests') return
     const before = backgroundSeconds
     const warnBefore = warnSensitive
+    const prsBefore = showPullRequests
     void getConfig()
       .then(async (cfg) => {
         if (cfg.backgroundSeconds !== before) rearmBackground()
         if (cfg.warnSensitive !== warnBefore) await rerate()
+        if (cfg.showPullRequests !== prsBefore) togglePullRequests()
         relabel()
       })
       .catch(() => undefined)

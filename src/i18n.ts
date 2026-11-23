@@ -117,6 +117,10 @@ const DICT = {
   },
   'chip.junk': { en: 'junk files', de: 'Datenmüll', es: 'archivos basura' },
   'chip.clean': { en: 'clean', de: 'sauber', es: 'limpio' },
+  'chip.prOpen': { en: 'PR #{n} open', de: 'PR #{n} offen', es: 'PR #{n} abierta' },
+  'chip.prDraft': { en: 'PR #{n} draft', de: 'PR #{n} Entwurf', es: 'PR #{n} borrador' },
+  'chip.prMerged': { en: 'PR #{n} merged', de: 'PR #{n} gemergt', es: 'PR #{n} fusionada' },
+  'chip.prClosed': { en: 'PR #{n} closed', de: 'PR #{n} geschlossen', es: 'PR #{n} cerrada' },
   // File states (git's two-letter code as a word)
   'file.new': { en: 'new', de: 'neu', es: 'nuevo' },
   'file.conflict': { en: 'conflict', de: 'Konflikt', es: 'conflicto' },
@@ -131,9 +135,9 @@ const DICT = {
   // Settings
   'settings.title': { en: 'Settings', de: 'Einstellungen', es: 'Ajustes' },
   'settings.description': {
-    en: 'base branch, refresh, notifications, sensitive files, language',
-    de: 'Basis-Branch, Aktualisierung, Benachrichtigungen, sensible Dateien, Sprache',
-    es: 'branch base, actualización, avisos, archivos sensibles, idioma'
+    en: 'base branch, refresh, notifications, sensitive files, pull requests, language',
+    de: 'Basis-Branch, Aktualisierung, Benachrichtigungen, sensible Dateien, Pull Requests, Sprache',
+    es: 'branch base, actualización, avisos, archivos sensibles, pull requests, idioma'
   },
   'settings.base': { en: 'Base branch (empty = detect from origin/HEAD)', de: 'Basis-Branch (leer = aus origin/HEAD erkennen)', es: 'Branch base (vacío = detectar desde origin/HEAD)' },
   'settings.basePlaceholder': { en: 'e.g. origin/main', de: 'z. B. origin/main', es: 'p. ej. origin/main' },
@@ -154,6 +158,11 @@ const DICT = {
     en: 'Warn about files that must not be committed (by name only)',
     de: 'Vor Dateien warnen, die nicht ins Repo gehören (nur nach dem Namen)',
     es: 'Avisar de archivos que no deben ir al repo (solo por el nombre)'
+  },
+  'settings.showPullRequests': {
+    en: 'Show GitHub pull requests (asks gh, uses the network)',
+    de: 'GitHub-Pull-Requests anzeigen (fragt gh, nutzt das Netzwerk)',
+    es: 'Mostrar pull requests de GitHub (consulta gh, usa la red)'
   },
   'settings.language': { en: 'Language', de: 'Sprache', es: 'Idioma' },
   'settings.languageAuto': { en: 'Automatic', de: 'Automatisch', es: 'Automático' },

@@ -32,7 +32,7 @@ type Filter = 'all' | 'changes' | 'safe'
 type Grouping = 'status' | 'project'
 
 const state = atom<SessionsState | null>(null)
-const config = atom<Config>({ baseBranch: '', intervalSeconds: 30, notifyOnAgentDone: true, backgroundSeconds: 120, language: 'auto', warnSensitive: true })
+const config = atom<Config>({ baseBranch: '', intervalSeconds: 30, notifyOnAgentDone: true, backgroundSeconds: 120, language: 'auto', warnSensitive: true, showPullRequests: false })
 // Filter and grouping are remembered between runs; the stored value is checked before it is used
 const filter = atom<Filter>('filter', 'all', { persist: 'plugin' })
 const query = atom('')
@@ -343,6 +343,11 @@ function SettingsBox() {
           label={tr(lang, 'settings.warnSensitive')}
           checked={c.warnSensitive !== false}
           onChange={(v) => void updateConfig({ warnSensitive: v })}
+        />
+        <Switch
+          label={tr(lang, 'settings.showPullRequests')}
+          checked={c.showPullRequests === true}
+          onChange={(v) => void updateConfig({ showPullRequests: v })}
         />
       </Stack>
     </Collapsible>
