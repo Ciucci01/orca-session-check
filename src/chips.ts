@@ -58,7 +58,7 @@ export function chips(s: Session, lang: Lang = 'en'): Chip[] {
   else if (s.reasons.includes('agent status unknown')) add('chip.agentUnknown', 'neutral')
   if (out.length === 0) add('chip.clean', 'success')
   // After "clean": a pull request says nothing about the files, a clean worktree keeps its green chip
-  if (s.pr) add(PR_CHIP[s.pr.state][0], PR_CHIP[s.pr.state][1], { n: s.pr.number })
+  if (s.pr) add(PR_CHIP[s.pr.state][0], PR_CHIP[s.pr.state][1], { ref: s.pr.forge === 'gitlab' ? `MR !${s.pr.number}` : `PR #${s.pr.number}` })
   return out
 }
 

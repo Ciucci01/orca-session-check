@@ -29,11 +29,13 @@ test('commits that are already in the base branch say merged, not unpushed', () 
 })
 
 test('the pull request comes last and leaves a clean worktree its green chip', () => {
-  assert.deepEqual(texts({ pr: { number: 12, state: 'open' } }), ['success:clean', 'accent:PR #12 open'])
-  assert.deepEqual(texts({ pr: { number: 3, state: 'draft' } }), ['success:clean', 'neutral:PR #3 draft'])
-  assert.deepEqual(texts({ upstream: null, upstreamGone: true, merged: false, pr: { number: 7, state: 'merged' } }), ['warning:upstream gone', 'success:PR #7 merged'])
-  assert.deepEqual(texts({ ahead: 1, pr: { number: 8, state: 'closed' } }), ['warning:1 unpushed', 'neutral:PR #8 closed'])
-  assert.equal(chips({ ...base, pr: { number: 7, state: 'merged' } }, 'de').at(-1)?.text, 'PR #7 gemergt')
+  assert.deepEqual(texts({ pr: { forge: 'github', number: 12, state: 'open' } }), ['success:clean', 'accent:PR #12 open'])
+  assert.deepEqual(texts({ pr: { forge: 'github', number: 3, state: 'draft' } }), ['success:clean', 'neutral:PR #3 draft'])
+  assert.deepEqual(texts({ upstream: null, upstreamGone: true, merged: false, pr: { forge: 'github', number: 7, state: 'merged' } }), ['warning:upstream gone', 'success:PR #7 merged'])
+  assert.deepEqual(texts({ ahead: 1, pr: { forge: 'github', number: 8, state: 'closed' } }), ['warning:1 unpushed', 'neutral:PR #8 closed'])
+  assert.equal(chips({ ...base, pr: { forge: 'github', number: 7, state: 'merged' } }, 'de').at(-1)?.text, 'PR #7 gemergt')
+  // GitLab names them merge requests, numbered with "!"
+  assert.deepEqual(texts({ pr: { forge: 'gitlab', number: 1121, state: 'merged' } }), ['success:clean', 'success:MR !1121 merged'])
 })
 
 test('no upstream and detached HEAD are yellow, unless merged', () => {

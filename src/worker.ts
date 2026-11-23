@@ -5,7 +5,7 @@ import { cleanPath, compareSessions, isSafePath, verdict as rate, verdictRank } 
 import { mapLimit, MAX_PARALLEL, scanRepo, type RepoFailure, type RepoState } from './runner'
 import { errorKey, languageSetting, resolveLang, tr, type Lang } from './i18n'
 import { agentDoneText, clampBackground, statusBar, type BarItem } from './summary'
-import { lookupPullRequest } from './gh'
+import { lookupPullRequest } from './pulls'
 import type { AgentState, Config, PullRequest, Session, SessionsState, Verdict } from './protocol'
 
 const MAX_WORKSPACES = 100
@@ -87,9 +87,9 @@ export default function activate(orca: OrcaWorkerApi): void {
   let language = CONFIG_DEFAULTS.language
   // Off: no file is reported as sensitive and the verdict does not look at names
   let warnSensitive = CONFIG_DEFAULTS.warnSensitive
-  // Pull requests per workspace and the branch they belong to; looked up only while the setting is on
+  // Pull requests per workspace and the branch and HEAD they were looked up for; only while the setting is on
   let showPullRequests = CONFIG_DEFAULTS.showPullRequests
-  const prs = new Map<string, { at: number; branch: string; pr: PullRequest | null }>()
+  const prs = new Map<string, { at: number; branch: string; oid: string | null; pr: PullRequest | null }>()
   let prLookup: Promise<void> | null = null
   let uiLocale: string | null = null
   const lang = (): Lang => {
@@ -336,31 +336,33 @@ export default function activate(orca: OrcaWorkerApi): void {
   }
 
   /**
-   * Asks gh for the pull requests that are due, after a scan and off its path, so the panel never waits for the network.
+   * Asks gh or glab for the pull and merge requests that are due, after a scan and off its path, so the panel never waits for the network.
    * Publishes again only when one changed. A failed lookup keeps what was known and never touches the verdict.
    */
   function refreshPullRequests(): void {
     if (!showPullRequests || prLookup || stopped) return
     prLookup = (async () => {
       const now = Date.now()
-      const todo: { id: string; path: string; branch: string }[] = []
+      const todo: { id: string; path: string; branch: string; oid: string | null }[] = []
       for (const r of rows) {
         const c = checked.get(r.id)
         if (!isLocalWorktree(r) || !c || isFailure(c.result) || !c.result.head) continue
         const p = prs.get(r.id)
-        if (!p || p.branch !== c.result.head || now - p.at >= TUNING.prTtlMs) todo.push({ id: r.id, path: r.path, branch: c.result.head })
+        // A new commit can make a merged request no longer the branch's: ask again
+        const { head: branch, oid } = c.result
+        if (!p || p.branch !== branch || p.oid !== oid || now - p.at >= TUNING.prTtlMs) todo.push({ id: r.id, path: r.path, branch, oid })
       }
       const errors = new Set<string>()
       let changed = false
       await mapLimit(todo, MAX_PARALLEL, async (t) => {
         if (stopped) return
-        const res = await lookupPullRequest(t.path, t.branch)
+        const res = await lookupPullRequest(t.path, t.branch, t.oid)
         const prev = prs.get(t.id)
         const last = prev?.branch === t.branch ? prev.pr : null
         if ('error' in res) errors.add(res.error)
         const pr = 'error' in res ? last : res.pr
         if (JSON.stringify(pr) !== JSON.stringify(last)) changed = true
-        prs.set(t.id, { at: Date.now(), branch: t.branch, pr })
+        prs.set(t.id, { at: Date.now(), branch: t.branch, oid: t.oid, pr })
       })
       if (errors.size > 0) orca.log(`pull requests: ${[...errors].join(', ')}`)
       if (changed && showPullRequests && !stopped) publish()

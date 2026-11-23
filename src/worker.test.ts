@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { assert, hostError, mockHost, mountWorker, test } from 'orca/testing'
 import * as main from './worker'
-import { GH } from './gh'
+import { CLI } from './pulls'
 import type { SessionsState } from './protocol'
 
 // Every test stops its workers and removes its repositories, even when an assertion fails
@@ -28,7 +28,7 @@ function t(name: string, fn: () => Promise<void>): void {
     } finally {
       Object.assign(main.TUNING, TEST_TUNING)
       main.LOCALE.system = () => 'en-US'
-      GH.command = 'gh'
+      CLI.gh = 'gh'
       for (const w of workers.splice(0)) await w.deactivate().catch(() => undefined)
       for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true }).catch(() => undefined)
     }
@@ -958,7 +958,7 @@ async function fakeGh(out: string, code = 0): Promise<string> {
   const log = join(d, 'calls')
   await writeFile(join(d, 'gh'), `#!/bin/sh\necho "$@" >> "${log}"\necho '${out}'\nexit ${code}\n`)
   await chmod(join(d, 'gh'), 0o755)
-  GH.command = join(d, 'gh')
+  CLI.gh = join(d, 'gh')
   return log
 }
 const ghCalls = async (log: string) => (await readFile(log, 'utf8').catch(() => '')).split('\n').filter(Boolean).length
@@ -980,7 +980,7 @@ t('pull requests are off by default: gh never starts; switched on, they arrive',
   const cfg = (await worker.request('config.set', { showPullRequests: true })) as { showPullRequests: boolean }
   assert.equal(cfg.showPullRequests, true)
   await until(() => sessionOf(worker, 'w1')?.pr?.number === 12)
-  assert.deepEqual(sessionOf(worker, 'w1')?.pr, { number: 12, state: 'open' })
+  assert.deepEqual(sessionOf(worker, 'w1')?.pr, { forge: 'github', number: 12, state: 'open' })
 })
 
 t('pull requests come after the git state, leave the verdict alone, are cached, and go when switched off', async () => {

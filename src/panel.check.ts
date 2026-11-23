@@ -37,11 +37,11 @@ const config: Config = { baseBranch: '', intervalSeconds: 30, notifyOnAgentDone:
 const withPrs: SessionsState = {
   ...state,
   sessions: [
-    { ...state.sessions[0], pr: { number: 42, state: 'open' } },
-    { ...state.sessions[1], pr: { number: 43, state: 'draft' } },
+    { ...state.sessions[0], pr: { forge: 'github', number: 42, state: 'open' } },
+    { ...state.sessions[1], pr: { forge: 'github', number: 43, state: 'draft' } },
     {
       ...base, id: 'w6', name: 'cart-badge', branch: 'feature/cart-badge', verdict: 'check', reasons: ['upstream branch is gone, has commits outside the base branch'],
-      upstream: 'origin/feature/cart-badge', upstreamGone: true, merged: false, pr: { number: 38, state: 'merged' }
+      upstream: 'origin/feature/cart-badge', upstreamGone: true, merged: false, pr: { forge: 'github', number: 38, state: 'merged' }
     },
     ...state.sessions.slice(2)
   ]

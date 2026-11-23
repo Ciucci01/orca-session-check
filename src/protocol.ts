@@ -24,8 +24,8 @@ export type SensitiveFile = {
   rule: string
 }
 
-/** The GitHub pull request of a worktree's branch, as gh reports it */
-export type PullRequest = { number: number; state: 'open' | 'draft' | 'merged' | 'closed' }
+/** The pull request (GitHub, from gh) or merge request (GitLab, from glab) of a worktree's branch */
+export type PullRequest = { forge: 'github' | 'gitlab'; number: number; state: 'open' | 'draft' | 'merged' | 'closed' }
 
 export type Session = {
   /** Orca workspace id */
@@ -112,7 +112,7 @@ export type Config = {
   language: LanguageSetting
   /** Warn about files that must not be committed, by name only */
   warnSensitive: boolean
-  /** Ask gh for the pull request of each branch: the only use of the network, off by default */
+  /** Ask gh or glab for the pull or merge request of each branch: the only use of the network, off by default */
   showPullRequests: boolean
 }
 

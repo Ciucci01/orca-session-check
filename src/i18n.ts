@@ -117,10 +117,11 @@ const DICT = {
   },
   'chip.junk': { en: 'junk files', de: 'Datenmüll', es: 'archivos basura' },
   'chip.clean': { en: 'clean', de: 'sauber', es: 'limpio' },
-  'chip.prOpen': { en: 'PR #{n} open', de: 'PR #{n} offen', es: 'PR #{n} abierta' },
-  'chip.prDraft': { en: 'PR #{n} draft', de: 'PR #{n} Entwurf', es: 'PR #{n} borrador' },
-  'chip.prMerged': { en: 'PR #{n} merged', de: 'PR #{n} gemergt', es: 'PR #{n} fusionada' },
-  'chip.prClosed': { en: 'PR #{n} closed', de: 'PR #{n} geschlossen', es: 'PR #{n} cerrada' },
+  // {ref} is "PR #12" (GitHub) or "MR !12" (GitLab)
+  'chip.prOpen': { en: '{ref} open', de: '{ref} offen', es: '{ref} abierta' },
+  'chip.prDraft': { en: '{ref} draft', de: '{ref} Entwurf', es: '{ref} borrador' },
+  'chip.prMerged': { en: '{ref} merged', de: '{ref} gemergt', es: '{ref} fusionada' },
+  'chip.prClosed': { en: '{ref} closed', de: '{ref} geschlossen', es: '{ref} cerrada' },
   // File states (git's two-letter code as a word)
   'file.new': { en: 'new', de: 'neu', es: 'nuevo' },
   'file.conflict': { en: 'conflict', de: 'Konflikt', es: 'conflicto' },
@@ -160,9 +161,9 @@ const DICT = {
     es: 'Avisar de archivos que no deben ir al repo (solo por el nombre)'
   },
   'settings.showPullRequests': {
-    en: 'Show GitHub pull requests (asks gh, uses the network)',
-    de: 'GitHub-Pull-Requests anzeigen (fragt gh, nutzt das Netzwerk)',
-    es: 'Mostrar pull requests de GitHub (consulta gh, usa la red)'
+    en: 'Show pull and merge requests (asks gh or glab, uses the network)',
+    de: 'Pull und Merge Requests anzeigen (fragt gh oder glab, nutzt das Netzwerk)',
+    es: 'Mostrar pull y merge requests (consulta gh o glab, usa la red)'
   },
   'settings.language': { en: 'Language', de: 'Sprache', es: 'Idioma' },
   'settings.languageAuto': { en: 'Automatic', de: 'Automatisch', es: 'Automático' },
