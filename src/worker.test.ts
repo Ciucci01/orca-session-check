@@ -1,9 +1,10 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { assert, hostError, mockHost, mountWorker, test } from 'orca/testing'
 import * as main from './worker'
+import { CLI } from './pulls'
 import type { SessionsState } from './protocol'
 
 // Every test stops its workers and removes its repositories, even when an assertion fails
@@ -16,7 +17,7 @@ async function mount(host: ReturnType<typeof mockHost>): Promise<Worker> {
   return w
 }
 // Tests start from fixed timings: no background scan unless a test asks for one, no 15 s wait
-const TEST_TUNING = { eventGapMs: 2000, minRescanMs: 0, startDelayMs: 1e9, secondMs: 1000, notifyGapMs: 10 * 60_000 }
+const TEST_TUNING = { eventGapMs: 2000, minRescanMs: 0, startDelayMs: 1e9, secondMs: 1000, notifyGapMs: 10 * 60_000, prTtlMs: 0 }
 function t(name: string, fn: () => Promise<void>): void {
   test(name, async () => {
     Object.assign(main.TUNING, TEST_TUNING)
@@ -27,6 +28,7 @@ function t(name: string, fn: () => Promise<void>): void {
     } finally {
       Object.assign(main.TUNING, TEST_TUNING)
       main.LOCALE.system = () => 'en-US'
+      CLI.gh = 'gh'
       for (const w of workers.splice(0)) await w.deactivate().catch(() => undefined)
       for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true }).catch(() => undefined)
     }
@@ -262,10 +264,10 @@ t('hiding is stored and forgotten when the workspace is gone', async () => {
 t('settings are read, clamped and validated', async () => {
   const host = mockHost({ results: { 'workspace.list': list([]) }, settings: { intervalSeconds: 2, baseBranch: ' origin/dev ', backgroundSeconds: 10, notifyOnAgentDone: false } })
   const worker = await mount(host)
-  assert.deepEqual(await worker.request('config.get'), { baseBranch: 'origin/dev', intervalSeconds: 10, notifyOnAgentDone: false, backgroundSeconds: 30, language: 'auto', warnSensitive: true })
-  assert.deepEqual(await worker.request('config.set', { intervalSeconds: 9999 }), { baseBranch: 'origin/dev', intervalSeconds: 300, notifyOnAgentDone: false, backgroundSeconds: 30, language: 'auto', warnSensitive: true })
+  assert.deepEqual(await worker.request('config.get'), { baseBranch: 'origin/dev', intervalSeconds: 10, notifyOnAgentDone: false, backgroundSeconds: 30, language: 'auto', warnSensitive: true, showPullRequests: false })
+  assert.deepEqual(await worker.request('config.set', { intervalSeconds: 9999 }), { baseBranch: 'origin/dev', intervalSeconds: 300, notifyOnAgentDone: false, backgroundSeconds: 30, language: 'auto', warnSensitive: true, showPullRequests: false })
   await worker.request('config.set', { intervalSeconds: 'x' as never, baseBranch: 5 as never })
-  assert.deepEqual(await worker.request('config.get'), { baseBranch: 'origin/dev', intervalSeconds: 300, notifyOnAgentDone: false, backgroundSeconds: 30, language: 'auto', warnSensitive: true })
+  assert.deepEqual(await worker.request('config.get'), { baseBranch: 'origin/dev', intervalSeconds: 300, notifyOnAgentDone: false, backgroundSeconds: 30, language: 'auto', warnSensitive: true, showPullRequests: false })
   const bg = async (value: unknown) => ((await worker.request('config.set', { backgroundSeconds: value as never })) as { backgroundSeconds: number }).backgroundSeconds
   assert.equal(await bg(9999), 600)
   assert.equal(await bg(5), 30)
@@ -285,7 +287,7 @@ t('settings are read, clamped and validated', async () => {
 t('without stored settings the defaults apply', async () => {
   const host = mockHost({ results: { 'workspace.list': list([]) } })
   const worker = await mount(host)
-  assert.deepEqual(await worker.request('config.get'), { baseBranch: '', intervalSeconds: 30, notifyOnAgentDone: true, backgroundSeconds: 120, language: 'auto', warnSensitive: true })
+  assert.deepEqual(await worker.request('config.get'), { baseBranch: '', intervalSeconds: 30, notifyOnAgentDone: true, backgroundSeconds: 120, language: 'auto', warnSensitive: true, showPullRequests: false })
 })
 
 t('the refresh command scans and counts', async () => {
@@ -947,4 +949,67 @@ t('the notification adds the number of sensitive files, not when the warning is 
   await worker.request('config.set', { warnSensitive: false })
   await agentRun(worker)
   assert.equal(notes(host).at(-1)?.body, 'acme-shop / checkout: agent finished, 1 new file')
+})
+
+/** A fake gh that writes one line per call to the returned log and prints `out`, or exits with `code` */
+async function fakeGh(out: string, code = 0): Promise<string> {
+  const d = await mkdtemp(join(tmpdir(), 'acme-gh-'))
+  dirs.push(d)
+  const log = join(d, 'calls')
+  await writeFile(join(d, 'gh'), `#!/bin/sh\necho "$@" >> "${log}"\necho '${out}'\nexit ${code}\n`)
+  await chmod(join(d, 'gh'), 0o755)
+  CLI.gh = join(d, 'gh')
+  return log
+}
+const ghCalls = async (log: string) => (await readFile(log, 'utf8').catch(() => '')).split('\n').filter(Boolean).length
+const OPEN_PR = '[{"number":12,"state":"OPEN","isDraft":false,"headRepositoryOwner":{"login":"acme"}}]'
+async function githubRepo(): Promise<string> {
+  const d = await repo()
+  git(d, 'remote', 'add', 'origin', 'git@github.com:acme/shop.git')
+  return d
+}
+
+t('pull requests are off by default: gh never starts; switched on, they arrive', async () => {
+  const log = await fakeGh(OPEN_PR)
+  const host = mockHost({ results: { 'workspace.list': list([ws('w1', await githubRepo())]) } })
+  const worker = await mount(host)
+  await worker.request('sessions.get')
+  await worker.request('sessions.refresh')
+  assert.equal(sessionOf(worker, 'w1')?.pr, null)
+  assert.equal(await ghCalls(log), 0)
+  const cfg = (await worker.request('config.set', { showPullRequests: true })) as { showPullRequests: boolean }
+  assert.equal(cfg.showPullRequests, true)
+  await until(() => sessionOf(worker, 'w1')?.pr?.number === 12)
+  assert.deepEqual(sessionOf(worker, 'w1')?.pr, { forge: 'github', number: 12, state: 'open' })
+})
+
+t('pull requests come after the git state, leave the verdict alone, are cached, and go when switched off', async () => {
+  const log = await fakeGh(OPEN_PR)
+  const host = mockHost({ settings: { showPullRequests: true }, results: { 'workspace.list': list([ws('w1', await githubRepo())]) } })
+  const worker = await mount(host)
+  // The panel gets the scan without waiting for gh
+  const first = ((await worker.request('sessions.get')) as SessionsState).sessions[0]
+  assert.equal(first.pr, null)
+  await until(() => sessionOf(worker, 'w1')?.pr?.number === 12)
+  assert.equal(sessionOf(worker, 'w1')?.verdict, first.verdict)
+  assert.deepEqual(sessionOf(worker, 'w1')?.reasons, first.reasons)
+  // Within the time to live gh is not asked again
+  main.TUNING.prTtlMs = 60_000
+  await worker.request('sessions.refresh')
+  assert.equal(await ghCalls(log), 1)
+  await worker.request('config.set', { showPullRequests: false })
+  assert.equal(sessionOf(worker, 'w1')?.pr, null)
+})
+
+t('a failing gh is logged once per round and changes neither the verdict nor the status bar', async () => {
+  await fakeGh('', 4)
+  const host = mockHost({ settings: { showPullRequests: true }, results: { 'workspace.list': list([ws('w1', await githubRepo()), ws('w2', await githubRepo())]) } })
+  const worker = await mount(host)
+  const before = ((await worker.request('sessions.get')) as SessionsState).sessions
+  const barBefore = bar(host)
+  await until(() => worker.logs.some((l) => l.startsWith('pull requests:')))
+  assert.deepEqual(worker.logs.filter((l) => l.startsWith('pull requests:')), ['pull requests: gh is not logged in'])
+  const after = lastState(worker)?.sessions ?? []
+  assert.deepEqual(after.map((s) => [s.id, s.verdict, s.error, s.pr]), before.map((s) => [s.id, s.verdict, null, null]))
+  assert.deepEqual(bar(host), barBefore)
 })

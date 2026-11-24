@@ -3,7 +3,7 @@
   "id": "session-check",
   "name": "Session Check",
   "version": "1.2.0",
-  "description": "See at a glance which of your Orca worktrees still have uncommitted files, unpushed commits, stashes or a running agent, and which sessions are safe to close. Status bar count, a notification when an agent leaves open work, and a warning for files named like secrets that are not ignored. Read-only, no network.",
+  "description": "See at a glance which of your Orca worktrees still have uncommitted files, unpushed commits, stashes or a running agent, and which sessions are safe to close. Status bar count, a notification when an agent leaves open work, and a warning for files named like secrets that are not ignored. Optionally the state of each branch's GitHub pull request or GitLab merge request. Read-only, no network unless you turn them on.",
   "engines": {
     "orca": ">=1.4.259"
   },
@@ -72,6 +72,13 @@
         "description": "Warn when a worktree has files named like secrets (.env, private keys, credentials) that git does not ignore or that are tracked already, and junk such as node_modules. Judged by the file name only, contents are never read.",
         "type": "boolean",
         "default": true
+      },
+      {
+        "key": "showPullRequests",
+        "title": "Show pull and merge requests",
+        "description": "Show the state of each branch's GitHub pull request or GitLab merge request: open, draft, merged or closed. Asks the GitHub CLI (gh) or the GitLab CLI (glab), which must be installed and logged in, at most every 5 minutes per worktree. The only setting that uses the network.",
+        "type": "boolean",
+        "default": false
       },
       {
         "key": "language",

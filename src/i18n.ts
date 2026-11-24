@@ -117,6 +117,11 @@ const DICT = {
   },
   'chip.junk': { en: 'junk files', de: 'Datenmüll', es: 'archivos basura' },
   'chip.clean': { en: 'clean', de: 'sauber', es: 'limpio' },
+  // {ref} is "PR #12" (GitHub) or "MR !12" (GitLab)
+  'chip.prOpen': { en: '{ref} open', de: '{ref} offen', es: '{ref} abierta' },
+  'chip.prDraft': { en: '{ref} draft', de: '{ref} Entwurf', es: '{ref} borrador' },
+  'chip.prMerged': { en: '{ref} merged', de: '{ref} gemergt', es: '{ref} fusionada' },
+  'chip.prClosed': { en: '{ref} closed', de: '{ref} geschlossen', es: '{ref} cerrada' },
   // File states (git's two-letter code as a word)
   'file.new': { en: 'new', de: 'neu', es: 'nuevo' },
   'file.conflict': { en: 'conflict', de: 'Konflikt', es: 'conflicto' },
@@ -131,9 +136,9 @@ const DICT = {
   // Settings
   'settings.title': { en: 'Settings', de: 'Einstellungen', es: 'Ajustes' },
   'settings.description': {
-    en: 'base branch, refresh, notifications, sensitive files, language',
-    de: 'Basis-Branch, Aktualisierung, Benachrichtigungen, sensible Dateien, Sprache',
-    es: 'branch base, actualización, avisos, archivos sensibles, idioma'
+    en: 'base branch, refresh, notifications, sensitive files, pull requests, language',
+    de: 'Basis-Branch, Aktualisierung, Benachrichtigungen, sensible Dateien, Pull Requests, Sprache',
+    es: 'branch base, actualización, avisos, archivos sensibles, pull requests, idioma'
   },
   'settings.base': { en: 'Base branch (empty = detect from origin/HEAD)', de: 'Basis-Branch (leer = aus origin/HEAD erkennen)', es: 'Branch base (vacío = detectar desde origin/HEAD)' },
   'settings.basePlaceholder': { en: 'e.g. origin/main', de: 'z. B. origin/main', es: 'p. ej. origin/main' },
@@ -154,6 +159,11 @@ const DICT = {
     en: 'Warn about files that must not be committed (by name only)',
     de: 'Vor Dateien warnen, die nicht ins Repo gehören (nur nach dem Namen)',
     es: 'Avisar de archivos que no deben ir al repo (solo por el nombre)'
+  },
+  'settings.showPullRequests': {
+    en: 'Show pull and merge requests (asks gh or glab, uses the network)',
+    de: 'Pull und Merge Requests anzeigen (fragt gh oder glab, nutzt das Netzwerk)',
+    es: 'Mostrar pull y merge requests (consulta gh o glab, usa la red)'
   },
   'settings.language': { en: 'Language', de: 'Sprache', es: 'Idioma' },
   'settings.languageAuto': { en: 'Automatic', de: 'Automatisch', es: 'Automático' },

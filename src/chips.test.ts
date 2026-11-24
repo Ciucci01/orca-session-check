@@ -5,7 +5,7 @@ import type { Session } from './protocol'
 const base: Session = {
   id: 'w', name: 'acme', project: 'acme-shop', branch: 'main', current: false, hidden: false, verdict: 'safe', reasons: [],
   uncommitted: 0, staged: 0, untracked: 0, conflicts: 0, ahead: 0, behind: 0, upstream: 'origin/main', upstreamGone: false, submodules: false, stash: 0, stashTotal: 0,
-  merged: null, operation: null, agent: null, files: [], moreFiles: 0, error: null, errorCode: null, lastCommitAt: null, lastActiveAt: null, unpushed: [], added: null, removed: null, dirtySince: null, sensitive: [], sensitiveCount: 0, sensitiveSecrets: 0, sensitiveTracked: 0, checkedAt: 1
+  merged: null, pr: null, operation: null, agent: null, files: [], moreFiles: 0, error: null, errorCode: null, lastCommitAt: null, lastActiveAt: null, unpushed: [], added: null, removed: null, dirtySince: null, sensitive: [], sensitiveCount: 0, sensitiveSecrets: 0, sensitiveTracked: 0, checkedAt: 1
 }
 const texts = (s: Partial<Session>) => chips({ ...base, ...s }).map((c) => `${c.tone}:${c.text}`)
 
@@ -26,6 +26,16 @@ test('commits that are already in the base branch say merged, not unpushed', () 
   assert.deepEqual(texts({ upstream: null, merged: true }), ['success:merged'])
   // open work stays the headline
   assert.deepEqual(texts({ uncommitted: 1, ahead: 2, merged: true }), ['accent:1 changed'])
+})
+
+test('the pull request comes last and leaves a clean worktree its green chip', () => {
+  assert.deepEqual(texts({ pr: { forge: 'github', number: 12, state: 'open' } }), ['success:clean', 'accent:PR #12 open'])
+  assert.deepEqual(texts({ pr: { forge: 'github', number: 3, state: 'draft' } }), ['success:clean', 'neutral:PR #3 draft'])
+  assert.deepEqual(texts({ upstream: null, upstreamGone: true, merged: false, pr: { forge: 'github', number: 7, state: 'merged' } }), ['warning:upstream gone', 'success:PR #7 merged'])
+  assert.deepEqual(texts({ ahead: 1, pr: { forge: 'github', number: 8, state: 'closed' } }), ['warning:1 unpushed', 'neutral:PR #8 closed'])
+  assert.equal(chips({ ...base, pr: { forge: 'github', number: 7, state: 'merged' } }, 'de').at(-1)?.text, 'PR #7 gemergt')
+  // GitLab names them merge requests, numbered with "!"
+  assert.deepEqual(texts({ pr: { forge: 'gitlab', number: 1121, state: 'merged' } }), ['success:clean', 'success:MR !1121 merged'])
 })
 
 test('no upstream and detached HEAD are yellow, unless merged', () => {

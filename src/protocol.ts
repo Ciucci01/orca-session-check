@@ -24,6 +24,9 @@ export type SensitiveFile = {
   rule: string
 }
 
+/** The pull request (GitHub, from gh) or merge request (GitLab, from glab) of a worktree's branch */
+export type PullRequest = { forge: 'github' | 'gitlab'; number: number; state: 'open' | 'draft' | 'merged' | 'closed' }
+
 export type Session = {
   /** Orca workspace id */
   id: string
@@ -55,6 +58,8 @@ export type Session = {
   stashTotal: number
   /** Every commit is already in the base branch; null when unknown */
   merged: boolean | null
+  /** Pull request of the branch; null when the setting is off, there is none or it is not known yet */
+  pr: PullRequest | null
   /** "merge", "rebase", "cherry-pick", "revert" or "bisect" while one runs */
   operation: string | null
   agent: AgentState | null
@@ -107,6 +112,8 @@ export type Config = {
   language: LanguageSetting
   /** Warn about files that must not be committed, by name only */
   warnSensitive: boolean
+  /** Ask gh or glab for the pull or merge request of each branch: the only use of the network, off by default */
+  showPullRequests: boolean
 }
 
 declare module 'orca' {
