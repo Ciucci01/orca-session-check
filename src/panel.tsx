@@ -437,7 +437,7 @@ export default function Panel() {
             </Stack>
           )
           // Quiet groups fold away; the ones that need a decision stay open
-          return group === 'unknown' || group === 'safe' ? (
+          return group === 'unknown' || group === 'safe' || group === 'main' ? (
             <Collapsible key={group} title={groupTitle(group, lang)} description={String(items.length)} defaultOpen={group === 'safe'}>
               {cards}
             </Collapsible>

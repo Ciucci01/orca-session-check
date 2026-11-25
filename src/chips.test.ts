@@ -5,7 +5,7 @@ import type { Session } from './protocol'
 const base: Session = {
   id: 'w', name: 'acme', project: 'acme-shop', branch: 'main', current: false, hidden: false, verdict: 'safe', reasons: [],
   uncommitted: 0, staged: 0, untracked: 0, conflicts: 0, ahead: 0, behind: 0, upstream: 'origin/main', upstreamGone: false, submodules: false, stash: 0, stashTotal: 0,
-  merged: null, operation: null, agent: null, files: [], moreFiles: 0, error: null, errorCode: null, lastCommitAt: null, lastActiveAt: null, unpushed: [], added: null, removed: null, dirtySince: null, sensitive: [], sensitiveCount: 0, sensitiveSecrets: 0, sensitiveTracked: 0, checkedAt: 1
+  merged: null, operation: null, mainWorktree: false, agent: null, files: [], moreFiles: 0, error: null, errorCode: null, lastCommitAt: null, lastActiveAt: null, unpushed: [], added: null, removed: null, dirtySince: null, sensitive: [], sensitiveCount: 0, sensitiveSecrets: 0, sensitiveTracked: 0, checkedAt: 1
 }
 const texts = (s: Partial<Session>) => chips({ ...base, ...s }).map((c) => `${c.tone}:${c.text}`)
 
@@ -44,10 +44,18 @@ test('an error is the only thing said about a worktree that was not checked', ()
 })
 
 test('groups: uncommitted files win over the verdict', () => {
-  assert.equal(groupOf({ uncommitted: 2, verdict: 'keep' }), 'dirty')
-  assert.equal(groupOf({ uncommitted: 0, verdict: 'keep' }), 'keep')
-  assert.equal(groupOf({ uncommitted: 0, verdict: 'safe' }), 'safe')
-  assert.equal(groupOf({ uncommitted: 0, verdict: 'unknown' }), 'unknown')
+  assert.equal(groupOf({ uncommitted: 2, verdict: 'keep', mainWorktree: false }), 'dirty')
+  assert.equal(groupOf({ uncommitted: 0, verdict: 'keep', mainWorktree: false }), 'keep')
+  assert.equal(groupOf({ uncommitted: 0, verdict: 'safe', mainWorktree: false }), 'safe')
+  assert.equal(groupOf({ uncommitted: 0, verdict: 'unknown', mainWorktree: false }), 'unknown')
+})
+
+test('groups: a clean main worktree has its own, one with open work stays where it was', () => {
+  assert.equal(groupOf({ uncommitted: 0, verdict: 'safe', mainWorktree: true }), 'main')
+  assert.equal(groupOf({ uncommitted: 0, verdict: 'check', mainWorktree: true }), 'check')
+  assert.equal(groupOf({ uncommitted: 0, verdict: 'keep', mainWorktree: true }), 'keep')
+  assert.equal(groupOf({ uncommitted: 2, verdict: 'keep', mainWorktree: true }), 'dirty')
+  assert.equal(groupOf({ uncommitted: 0, verdict: 'unknown', mainWorktree: true }), 'unknown')
 })
 
 test('state codes read as words', async () => {
@@ -73,6 +81,6 @@ test('a loose secret is a red chip, a tracked one is amber, junk is amber; the g
   assert.deepEqual(chips({ ...base, verdict: 'keep', sensitiveCount: 2, sensitiveSecrets: 2, sensitiveTracked: 1 }, 'de').map((c) => c.text), ['1 sensible Datei', '1 Geheimnis im Repo'])
   assert.deepEqual(chips({ ...base, verdict: 'check', sensitiveCount: 1 }, 'es').map((c) => c.text), ['archivos basura'])
   // a secret without uncommitted files keeps the worktree open; with them it is with the uncommitted ones
-  assert.equal(groupOf({ uncommitted: 0, verdict: 'keep' }), 'keep')
-  assert.equal(groupOf({ uncommitted: 2, verdict: 'keep' }), 'dirty')
+  assert.equal(groupOf({ uncommitted: 0, verdict: 'keep', mainWorktree: false }), 'keep')
+  assert.equal(groupOf({ uncommitted: 2, verdict: 'keep', mainWorktree: false }), 'dirty')
 })

@@ -5,7 +5,7 @@ import type { Config, Session, SessionsState } from './protocol'
 const base: Session = {
   id: '', name: '', project: 'acme-shop', branch: 'main', current: false, hidden: false, verdict: 'safe', reasons: ['clean, nothing unpushed'],
   uncommitted: 0, staged: 0, untracked: 0, conflicts: 0, ahead: 0, behind: 0, upstream: 'origin/main', upstreamGone: false, submodules: false, stash: 0, stashTotal: 0,
-  merged: null, operation: null, agent: null, files: [], moreFiles: 0, error: null, errorCode: null, lastCommitAt: null, lastActiveAt: null, unpushed: [], added: null, removed: null, dirtySince: null, sensitive: [], sensitiveCount: 0, sensitiveSecrets: 0, sensitiveTracked: 0, checkedAt: Date.now()
+  merged: null, operation: null, mainWorktree: false, agent: null, files: [], moreFiles: 0, error: null, errorCode: null, lastCommitAt: null, lastActiveAt: null, unpushed: [], added: null, removed: null, dirtySince: null, sensitive: [], sensitiveCount: 0, sensitiveSecrets: 0, sensitiveTracked: 0, checkedAt: Date.now()
 }
 
 const state: SessionsState = {
@@ -27,6 +27,7 @@ const state: SessionsState = {
       sensitive: [{ path: '.env.local', kind: 'secret', tracked: false, rule: '.env.*' }], sensitiveCount: 1, sensitiveSecrets: 1, sensitiveTracked: 0
     },
     { ...base, id: 'w4', name: 'docs-update', project: 'acme-docs', branch: 'main', verdict: 'safe', behind: 4 },
+    { ...base, id: 'w6', name: 'acme-shop', branch: 'main', verdict: 'safe', mainWorktree: true },
     {
       ...base, id: 'w5', name: 'old-spike', project: 'acme-docs', branch: 'spike/search', verdict: 'unknown', reasons: ['folder not found'], error: 'folder not found', errorCode: 'err.folderNotFound', upstream: null
     }

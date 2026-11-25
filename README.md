@@ -11,7 +11,7 @@ After a day with several agents you have a dozen worktrees open and no idea whic
 ## What you get
 
 - **Current session on top:** the workspace you are in is pinned above the list, whatever filter or search is set.
-- **Uncommitted files first:** a short line says how many worktrees have uncommitted files, and the list is grouped into *Uncommitted files* (most files on top), *Keep open*, *Check first*, *Can close* and *Not checked*.
+- **Uncommitted files first:** a short line says how many worktrees have uncommitted files, and the list is grouped into *Uncommitted files* (most files on top), *Keep open*, *Check first*, *Can close*, *Main worktrees* and *Not checked*.
 - **One compact card per worktree:** project, branch and chips such as `14 changed`, `13 unpushed`, `agent working`, `3 untracked`, `1 stash`, `merged` or `clean`. Red is only for conflicts, a running merge or rebase and files named like secrets, so the panel stays calm.
 - **Size and age at a glance:** `+120 -30` lines, the first changed files, the oldest uncommitted change, the last commit and the last activity Orca saw. Forgotten sessions stand out.
 - **Details on demand:** the first 20 changed files in plain words (`new`, `edited`, `deleted`, `renamed`, `conflict`) and the subjects of the first three unpushed commits.
@@ -61,6 +61,8 @@ After a day with several agents you have a dozen worktrees open and no idea whic
 | **Not checked** | folder workspace, remote (SSH) workspace, partial clone, not a git repository, git missing or failing. The reason is shown, nothing is guessed |
 
 When in doubt it is stricter: a worktree is never shown as closable because something could not be read.
+
+A clean main worktree, the folder the repository was cloned into, is listed under *Main worktrees* instead of *Can close*: git cannot remove it. It is told from a linked worktree by its git folder, which has no `commondir` file. With open work it stays in its group like any other worktree.
 
 ## Sensitive files
 

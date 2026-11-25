@@ -23,7 +23,7 @@ const cfg: Config = { baseBranch: '', intervalSeconds: 30, notifyOnAgentDone: tr
 const base: Session = {
   id: '', name: '', project: 'acme-shop', branch: 'main', current: false, hidden: false, verdict: 'safe', reasons: ['clean, nothing unpushed'],
   uncommitted: 0, staged: 0, untracked: 0, conflicts: 0, ahead: 0, behind: 0, upstream: 'origin/main', upstreamGone: false, submodules: false, stash: 0, stashTotal: 0,
-  merged: null, operation: null, agent: null, files: [], moreFiles: 0, error: null, errorCode: null, lastCommitAt: null, lastActiveAt: null, unpushed: [], added: null, removed: null, dirtySince: null, sensitive: [], sensitiveCount: 0, sensitiveSecrets: 0, sensitiveTracked: 0, checkedAt: 1
+  merged: null, operation: null, mainWorktree: false, agent: null, files: [], moreFiles: 0, error: null, errorCode: null, lastCommitAt: null, lastActiveAt: null, unpushed: [], added: null, removed: null, dirtySince: null, sensitive: [], sensitiveCount: 0, sensitiveSecrets: 0, sensitiveTracked: 0, checkedAt: 1
 }
 const dirty: Session = {
   ...base, id: 'w1', name: 'checkout', verdict: 'keep', reasons: ['3 uncommitted', '2 unpushed'], uncommitted: 3, ahead: 2,
@@ -62,6 +62,18 @@ t('the filter shows only worktrees with uncommitted files', async () => {
   assert.equal(view.find({ text: 'acme-shop / docs' }), null)
   await view.press({ text: 'All 2' })
   assert.ok(view.find({ text: 'acme-shop / docs' }))
+  await view.unmount()
+})
+
+t('a clean main worktree is listed apart, not under Can close', async () => {
+  const main: Session = { ...base, id: 'w3', name: 'shop-main', mainWorktree: true }
+  const host = mockHost({ requests: { 'sessions.get': state([dirty, safe, main]), 'sessions.refresh': state([dirty, safe, main]), 'config.get': cfg } })
+  const view = await open(host)
+  assert.ok(view.find({ type: 'Collapsible', label: 'Main worktrees' }))
+  await view.press({ text: 'Can close 1' })
+  assert.ok(view.find({ text: 'acme-shop / docs' }))
+  assert.equal(view.find({ type: 'Collapsible', label: 'Main worktrees' }), null)
+  assert.equal(view.find({ text: 'acme-shop / shop-main' }), null)
   await view.unmount()
 })
 

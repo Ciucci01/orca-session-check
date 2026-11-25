@@ -52,6 +52,14 @@ const ok = (r: Awaited<ReturnType<typeof scanRepo>>): RepoState => {
   return r as RepoState
 }
 
+t('the main worktree is told from a linked one', async () => {
+  const dir = await repo()
+  const wt = join(await tmp('acme-wt-'), 'tree')
+  git(dir, 'worktree', 'add', '-q', '-b', 'wt', wt)
+  assert.equal(ok(await scanRepo(dir, '')).mainWorktree, true)
+  assert.equal(ok(await scanRepo(wt, '')).mainWorktree, false)
+})
+
 t('clean repository with upstream', async () => {
   const { dir } = await withRemote()
   const s = ok(await scanRepo(dir, ''))

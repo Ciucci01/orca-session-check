@@ -7,21 +7,24 @@ export type ChipTone = 'neutral' | 'accent' | 'success' | 'warning' | 'danger'
 export type Chip = { text: string; tone: ChipTone }
 
 /** Group of the list a session belongs to; the order is the order on screen */
-export type Group = 'dirty' | 'keep' | 'check' | 'safe' | 'unknown'
-export const GROUPS: readonly Group[] = ['dirty', 'keep', 'check', 'safe', 'unknown']
+export type Group = 'dirty' | 'keep' | 'check' | 'safe' | 'main' | 'unknown'
+export const GROUPS: readonly Group[] = ['dirty', 'keep', 'check', 'safe', 'main', 'unknown']
 const GROUP_KEY: Record<Group, MsgKey> = {
   dirty: 'group.dirty',
   keep: 'group.keep',
   check: 'group.check',
   safe: 'group.safe',
+  main: 'group.main',
   unknown: 'group.unknown'
 }
 export function groupTitle(group: Group, lang: Lang = 'en'): string {
   return tr(lang, GROUP_KEY[group] ?? 'group.unknown')
 }
 
-export function groupOf(s: Pick<Session, 'uncommitted' | 'verdict'>): Group {
+export function groupOf(s: Pick<Session, 'uncommitted' | 'verdict' | 'mainWorktree'>): Group {
   if (s.uncommitted > 0) return 'dirty'
+  // Clean, but git cannot remove it: kept out of "Can close"
+  if (s.verdict === 'safe' && s.mainWorktree) return 'main'
   return s.verdict
 }
 

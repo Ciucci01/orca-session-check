@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { assert, hostError, mockHost, mountWorker, test } from 'orca/testing'
 import * as main from './worker'
 import type { SessionsState } from './protocol'
@@ -98,6 +98,17 @@ t('lists local worktrees with their git state, dirty ones first', async () => {
   assert.deepEqual(s.sessions.map((x) => [x.id, x.verdict, x.uncommitted]), [['w-dirty', 'keep', 1], ['w-clean', 'check', 0]])
   assert.deepEqual(host.callsOf('workspace.list'), [{ includeStatus: true }])
   assert.deepEqual(worker.refusals, [])
+})
+
+t('a main worktree is marked as one, a linked worktree is not', async () => {
+  const { dir } = await withRemote()
+  const linked = join(await mkdtemp(join(tmpdir(), 'acme-wt-')), 'tree')
+  dirs.push(dirname(linked))
+  git(dir, 'worktree', 'add', '-q', '-b', 'wt', linked)
+  const host = mockHost({ results: { 'workspace.list': list([ws('w-main', dir, { branch: 'main' }), ws('w-linked', linked, { branch: 'wt' })]) } })
+  const worker = await mount(host)
+  const s = (await worker.request('sessions.get')) as SessionsState
+  assert.deepEqual(s.sessions.map((x) => [x.id, x.verdict, x.mainWorktree]), [['w-linked', 'safe', false], ['w-main', 'safe', true]])
 })
 
 t('folders, remote workspaces and bad paths are not scanned and say why', async () => {

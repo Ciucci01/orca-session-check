@@ -42,6 +42,7 @@ const DICT = {
   'group.keep': { en: 'Keep open', de: 'Offen lassen', es: 'Mantener abierto' },
   'group.check': { en: 'Check first', de: 'Erst prüfen', es: 'Revisar primero' },
   'group.safe': { en: 'Can close', de: 'Schließbar', es: 'Se puede cerrar' },
+  'group.main': { en: 'Main worktrees', de: 'Haupt-Worktrees', es: 'Worktrees principales' },
   'group.unknown': { en: 'Not checked', de: 'Nicht geprüft', es: 'Sin revisar' },
   'empty.none.title': { en: 'No workspaces', de: 'Keine Workspaces', es: 'No hay workspaces' },
   'empty.none.text': { en: 'Add a workspace in Orca, then rescan.', de: 'Workspace in Orca hinzufügen, dann neu scannen.', es: 'Añade un workspace en Orca y vuelve a escanear.' },
