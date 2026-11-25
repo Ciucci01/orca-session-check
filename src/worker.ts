@@ -134,7 +134,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       lastActiveAt: r.status?.lastActivityAt ?? null,
       checkedAt: c?.at ?? 0
     }
-    const empty = { uncommitted: 0, staged: 0, untracked: 0, conflicts: 0, ahead: 0, behind: 0, upstream: null, upstreamGone: false, submodules: false, stash: 0, stashTotal: 0, merged: null, operation: null, files: [], moreFiles: 0, lastCommitAt: null, unpushed: [], added: null, removed: null, dirtySince: null, ...noSensitive }
+    const empty = { uncommitted: 0, staged: 0, untracked: 0, conflicts: 0, ahead: 0, behind: 0, upstream: null, upstreamGone: false, submodules: false, stash: 0, stashTotal: 0, merged: null, operation: null, mainWorktree: false, files: [], moreFiles: 0, lastCommitAt: null, unpushed: [], added: null, removed: null, dirtySince: null, ...noSensitive }
     const failed = (error: string): Session => {
       // An agent at work is a reason to keep the session even when git could not be read
       const busy = agent === 'working' || agent === 'permission'
@@ -169,6 +169,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       stashTotal: s.stashTotal,
       merged: s.merged,
       operation: s.operation,
+      mainWorktree: s.mainWorktree,
       files: s.files,
       moreFiles: s.moreFiles,
       lastCommitAt: s.lastCommitAt,

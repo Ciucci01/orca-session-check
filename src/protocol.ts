@@ -57,6 +57,8 @@ export type Session = {
   merged: boolean | null
   /** "merge", "rebase", "cherry-pick", "revert" or "bisect" while one runs */
   operation: string | null
+  /** The repository's main worktree, which git cannot remove; false when unknown */
+  mainWorktree: boolean
   agent: AgentState | null
   /** First changed files, at most 20 */
   files: FileEntry[]

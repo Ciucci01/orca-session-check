@@ -106,6 +106,8 @@ export type RepoState = Omit<StatusInfo, 'findings'> & SensitiveSummary & {
   submodules: boolean
   /** HEAD is in the base branch; null when there is none or it could not be told */
   merged: boolean | null
+  /** The repository's main worktree, which git cannot remove; false when it could not be told */
+  mainWorktree: boolean
 }
 
 export type RepoFailure = { error: string }
@@ -132,7 +134,10 @@ export async function scanRepo(path: string, baseSetting: string): Promise<RepoS
     if (stashList.code !== 0) return { error: 'git stash list failed' }
     const stash = parseStash(stashList.stdout)
     const dir = (await runGit(path, o, ['rev-parse', '--absolute-git-dir'])).stdout.trim()
-    const operation = dir.startsWith('/') ? operationFrom(await readdir(dir).catch(() => [])) : null
+    const gitDir = dir.startsWith('/') ? await readdir(dir).catch(() => null) : null
+    const operation = gitDir ? operationFrom(gitDir) : null
+    // A linked worktree's git folder points to the shared one with a commondir file
+    const mainWorktree = gitDir !== null && !gitDir.includes('commondir')
 
     const lastCommitAt = info.oid ? parseCommitTime((await runGit(path, o, ['log', '-1', '--format=%ct', 'HEAD'])).stdout) : null
 
@@ -168,6 +173,7 @@ export async function scanRepo(path: string, baseSetting: string): Promise<RepoS
       stash: info.head ? (stash.byBranch.get(info.head) ?? 0) : 0,
       stashTotal: stash.total,
       operation,
+      mainWorktree,
       lastCommitAt,
       unpushed,
       added,
